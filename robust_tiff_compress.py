@@ -762,7 +762,7 @@ Examples:
         '--threads',
         type=int,
         default=None,
-        help=f'Number of threads for tifffile compression (default: 75% of CPU cores)'
+        help='Number of threads for tifffile compression (default: 75%% of CPU cores)'
     )
     
     parser.add_argument(

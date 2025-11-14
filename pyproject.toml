@@ -1,0 +1,15 @@
+[project]
+name = "robust-tiff-compress"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "imagecodecs>=2025.11.11",
+    "numpy>=1.20.0",
+    "psutil>=5.8.0",
+    "pytest>=9.0.1",
+    "setuptools>=65.0.0",
+    "tifffile>=2022.7.28",
+    "tqdm>=4.60.0",
+]

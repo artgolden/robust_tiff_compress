@@ -1,0 +1,15 @@
+# Production dependencies for robust-tiff-compress
+# Install with: uv pip install -r requirements.txt
+
+# Core dependencies
+numpy>=1.20.0
+tifffile>=2022.7.28
+imagecodecs
+tqdm>=4.60.0
+
+# Optional but recommended (used for RAM/disk monitoring and process checking)
+psutil>=5.8.0
+
+# Required for version checking (pkg_resources)
+setuptools>=65.0.0
+
