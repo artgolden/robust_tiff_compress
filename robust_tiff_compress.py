@@ -375,6 +375,9 @@ def compress_tiff_file(
         if original_size < MIN_FILE_SIZE:
             return True, f"Skipped (file size {original_size} < {MIN_FILE_SIZE} bytes)"
 
+        if dry_run:
+            return True, "Dry run - would compress"
+
         # Check RAM size limit
         available_ram = get_available_ram()
         max_file_size = int(available_ram * RAM_SIZE_LIMIT_RATIO)
@@ -391,8 +394,6 @@ def compress_tiff_file(
         if not can_read:
             return False, "Could not read file as valid TIFF/numpy array"
 
-        if dry_run:
-            return True, "Dry run - would compress"
 
         # Determine output path
         if output_path:
@@ -414,7 +415,7 @@ def compress_tiff_file(
         if output_path:
             required_space = original_size  # Worst case: compressed is same size
         else:
-            required_space = original_size * 2  # Need space for both original and compressed
+            required_space = original_size * 10  # Need space for both original and compressed with some margin
         
         has_space, available = check_disk_space(
             os.path.dirname(temp_path) if output_path else os.path.dirname(file_path),
@@ -454,20 +455,8 @@ def compress_tiff_file(
             rename_temp_file_on_error(temp_path, file_path, f"Compression failed: {e}")
             return False, f"Compression failed: {e}"
 
-        # Verify compressed file exists and has reasonable size
         if not os.path.exists(temp_path):
             return False, "Compressed file was not created"
-
-        compressed_size = os.path.getsize(temp_path)
-        if compressed_size == 0:
-            rename_temp_file_on_error(temp_path, file_path, "Compressed file is empty")
-            return False, "Compressed file is empty"
-
-        # Check compression ratio
-        compression_ratio = float(original_size) / compressed_size
-        if compression_ratio < COMPRESSION_RATIO_THRESHOLD:
-            os.remove(temp_path)
-            return True, f"Skipped (compression ratio {compression_ratio:.2f} < {COMPRESSION_RATIO_THRESHOLD})"
 
         # Ensure temp file is fully written before moving (critical for HDD RAID)
         try:
@@ -481,6 +470,17 @@ def compress_tiff_file(
                 "Compressed file verification failed - could not fsync temp file",
             )
 
+        compressed_size = os.path.getsize(temp_path)
+        if compressed_size == 0:
+            rename_temp_file_on_error(temp_path, file_path, "Compressed file is empty")
+            return False, "Compressed file is empty"
+
+        # Check compression ratio
+        compression_ratio = float(original_size) / compressed_size
+        if compression_ratio < COMPRESSION_RATIO_THRESHOLD:
+            os.remove(temp_path)
+            return True, f"Skipped (compression ratio {compression_ratio:.2f} < {COMPRESSION_RATIO_THRESHOLD})"
+
         # Verify compressed file can be read
         can_read_compressed, compressed_array = verify_tiff_file(temp_path)
         if not can_read_compressed:
@@ -488,12 +488,12 @@ def compress_tiff_file(
             return False, "Compressed file verification failed - could not read"
 
         # Always compare array size and type (basic sanity check)
-        if array.shape != compressed_array.shape:
-            rename_temp_file_on_error(temp_path, file_path, f"Array shape mismatch: original {array.shape} vs compressed {compressed_array.shape}")
-            return False, f"Array shape mismatch: original {array.shape} vs compressed {compressed_array.shape}"
         if array.dtype != compressed_array.dtype:
             rename_temp_file_on_error(temp_path, file_path, f"Array dtype mismatch: original {array.dtype} vs compressed {compressed_array.dtype}")
             return False, f"Array dtype mismatch: original {array.dtype} vs compressed {compressed_array.dtype}"
+        if array.shape != compressed_array.shape:
+            rename_temp_file_on_error(temp_path, file_path, f"Array shape mismatch: original {array.shape} vs compressed {compressed_array.shape}")
+            return False, f"Array shape mismatch: original {array.shape} vs compressed {compressed_array.shape}"
 
         # Optional: Bit-exact verification for lossless compression only
         if verify_lossless_exact:
@@ -814,7 +814,7 @@ Examples:
         sys.exit(1)
     
     # Setup logging
-    setup_logging()
+    setup_logging(log_dir=args.folder)
     
     # Calculate threads for tifffile compression
     if args.threads is None:
