@@ -163,12 +163,14 @@ class FileLock:
     
     def release(self):
         """Release lock."""
-        if self.locked and os.path.exists(self.lock_file):
-            try:
-                os.remove(self.lock_file)
-                self.locked = False
-            except OSError:
-                pass
+        if self.locked:
+            if os.path.exists(self.lock_file):
+                try:
+                    os.remove(self.lock_file)
+                except OSError:
+                    pass
+            # Always update state, even if file removal fails
+            self.locked = False
     
     def __enter__(self):
         if not self.acquire():
@@ -361,7 +363,8 @@ def compress_tiff_file(
     threads: Optional[int],
     state: CompressionState,
     dry_run: bool = False,
-    verify_lossless_exact: bool = False
+    verify_lossless_exact: bool = False,
+    ignore_compression_ratio: bool = False
 ) -> Tuple[bool, Optional[str]]:
     """
     Compress a single TIFF file.
@@ -477,7 +480,7 @@ def compress_tiff_file(
 
         # Check compression ratio
         compression_ratio = float(original_size) / compressed_size
-        if compression_ratio < COMPRESSION_RATIO_THRESHOLD:
+        if not ignore_compression_ratio and compression_ratio < COMPRESSION_RATIO_THRESHOLD:
             os.remove(temp_path)
             return True, f"Skipped (compression ratio {compression_ratio:.2f} < {COMPRESSION_RATIO_THRESHOLD})"
 
@@ -687,6 +690,147 @@ def calculate_optimal_threads() -> int:
     return optimal
 
 
+def process_tiff_files(
+    tiff_files: List[str],
+    folder: str,
+    output: Optional[str],
+    compression: str,
+    quality: int,
+    threads: int,
+    state: CompressionState,
+    dry_run: bool,
+    verify_lossless_exact: bool,
+    ignore_compression_ratio: bool,
+    show_progress: bool = True
+) -> Dict[str, int]:
+    """
+    Process a list of TIFF files for compression.
+    
+    Args:
+        tiff_files: List of file paths to process
+        folder: Root folder for relative path calculation
+        output: Output folder (None for in-place compression)
+        compression: Compression type
+        quality: Compression quality
+        threads: Number of threads
+        state: CompressionState instance
+        dry_run: Whether to run in dry-run mode
+        verify_lossless_exact: Whether to verify lossless compression exactly
+        ignore_compression_ratio: Whether to ignore compression ratio threshold
+        show_progress: Whether to show progress bar
+    
+    Returns:
+        Dictionary with keys: success_count, skip_count, error_count, consecutive_errors
+    """
+    success_count = 0
+    skip_count = 0
+    error_count = 0
+    consecutive_errors = 0
+    last_errors = []  # Track last errors for warning file
+    stop_processing = False
+    
+    total_files = len(tiff_files)
+    
+    if show_progress:
+        pbar = tqdm(total=total_files, desc="Compressing", unit="file")
+    else:
+        pbar = None
+    
+    try:
+        for file_path in tiff_files:
+            if stop_processing:
+                break
+            
+            # Determine output path if output folder is specified
+            output_path = None
+            if output:
+                rel_path = os.path.relpath(file_path, folder)
+                output_path = os.path.join(output, rel_path)
+            
+            try:
+                success, message = compress_tiff_file(
+                    file_path,
+                    output_path,
+                    compression,
+                    quality,
+                    threads,
+                    state,
+                    dry_run,
+                    verify_lossless_exact,
+                    ignore_compression_ratio
+                )
+                
+                if success:
+                    # Reset consecutive error counter on success
+                    consecutive_errors = 0
+                    last_errors = []  # Clear error history on success
+                    if "Skipped" in message:
+                        skip_count += 1
+                    else:
+                        success_count += 1
+                else:
+                    # Track consecutive errors
+                    error_count += 1
+                    consecutive_errors += 1
+                    last_errors.append((file_path, message))
+                    # Keep only last MAX_CONSECUTIVE_ERRORS errors
+                    if len(last_errors) > MAX_CONSECUTIVE_ERRORS:
+                        last_errors.pop(0)
+                    logging.warning(f"{file_path}: {message}")
+                    
+                    # Stop if we've hit max consecutive errors
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                        stop_processing = True
+                        logging.error(
+                            f"Stopping compression after {consecutive_errors} consecutive errors. "
+                            f"This indicates a serious issue that requires investigation."
+                        )
+                        create_warning_file(folder, consecutive_errors, last_errors)
+                        break
+            
+            except Exception as e:
+                # Track consecutive errors for exceptions too
+                error_count += 1
+                consecutive_errors += 1
+                error_msg = f"Unexpected error: {e}"
+                last_errors.append((file_path, error_msg))
+                if len(last_errors) > MAX_CONSECUTIVE_ERRORS:
+                    last_errors.pop(0)
+                logging.error(f"{file_path}: {error_msg}", exc_info=True)
+                
+                # Stop if we've hit max consecutive errors
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                    stop_processing = True
+                    logging.error(
+                        f"Stopping compression after {consecutive_errors} consecutive errors. "
+                        f"This indicates a serious issue that requires investigation."
+                    )
+                    create_warning_file(folder, consecutive_errors, last_errors)
+                    break
+            
+            # Update progress bar
+            if pbar:
+                pbar.update(1)
+                pbar.set_postfix({
+                    'OK': success_count,
+                    'Skip': skip_count,
+                    'Error': error_count,
+                    'ConsecErr': consecutive_errors
+                })
+    
+    finally:
+        if pbar:
+            pbar.close()
+    
+    return {
+        'success_count': success_count,
+        'skip_count': skip_count,
+        'error_count': error_count,
+        'consecutive_errors': consecutive_errors,
+        'stop_processing': stop_processing
+    }
+
+
 def create_warning_file(root_dir: str, error_count: int, last_errors: List[Tuple[str, str]]) -> None:
     """
     Create a warning file in the root directory when compression stops due to errors.
@@ -798,6 +942,13 @@ Examples:
              'Slower but ensures data integrity for lossless compression.'
     )
     
+    parser.add_argument(
+        '--ignore-compression-ratio',
+        action='store_true',
+        help='Ignore compression ratio threshold requirement. '
+             'Useful for testing or when you want to compress files regardless of ratio.'
+    )
+    
     args = parser.parse_args()
     
     # Validate inputs
@@ -872,104 +1023,30 @@ Examples:
                 logging.info("No files to compress")
                 return
             
-            # Process files sequentially with progress bar
-            success_count = 0
-            skip_count = 0
-            error_count = 0
-            consecutive_errors = 0
-            last_errors = []  # Track last errors for warning file
-            stop_processing = False
-            
-            with tqdm(total=total_files, desc="Compressing", unit="file") as pbar:
-                # Process files sequentially (no concurrency)
-                for file_path in tiff_files:
-                    if stop_processing:
-                        break
-                    
-                    # Determine output path if output folder is specified
-                    output_path = None
-                    if args.output:
-                        rel_path = os.path.relpath(file_path, args.folder)
-                        output_path = os.path.join(args.output, rel_path)
-                    
-                    try:
-                        success, message = compress_tiff_file(
-                            file_path,
-                            output_path,
-                            args.compression,
-                            args.quality,
-                            args.threads,
-                            state,
-                            args.dry_run,
-                            args.verify_lossless_exact
-                        )
-                        
-                        if success:
-                            # Reset consecutive error counter on success
-                            consecutive_errors = 0
-                            last_errors = []  # Clear error history on success
-                            if "Skipped" in message:
-                                skip_count += 1
-                            else:
-                                success_count += 1
-                        else:
-                            # Track consecutive errors
-                            error_count += 1
-                            consecutive_errors += 1
-                            last_errors.append((file_path, message))
-                            # Keep only last MAX_CONSECUTIVE_ERRORS errors
-                            if len(last_errors) > MAX_CONSECUTIVE_ERRORS:
-                                last_errors.pop(0)
-                            logging.warning(f"{file_path}: {message}")
-                            
-                            # Stop if we've hit max consecutive errors
-                            if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                                stop_processing = True
-                                logging.error(
-                                    f"Stopping compression after {consecutive_errors} consecutive errors. "
-                                    f"This indicates a serious issue that requires investigation."
-                                )
-                                create_warning_file(args.folder, consecutive_errors, last_errors)
-                                break
-                    
-                    except Exception as e:
-                        # Track consecutive errors for exceptions too
-                        error_count += 1
-                        consecutive_errors += 1
-                        error_msg = f"Unexpected error: {e}"
-                        last_errors.append((file_path, error_msg))
-                        if len(last_errors) > MAX_CONSECUTIVE_ERRORS:
-                            last_errors.pop(0)
-                        logging.error(f"{file_path}: {error_msg}", exc_info=True)
-                        
-                        # Stop if we've hit max consecutive errors
-                        if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                            stop_processing = True
-                            logging.error(
-                                f"Stopping compression after {consecutive_errors} consecutive errors. "
-                                f"This indicates a serious issue that requires investigation."
-                            )
-                            create_warning_file(args.folder, consecutive_errors, last_errors)
-                            break
-                    
-                    # Update progress bar
-                    pbar.update(1)
-                    pbar.set_postfix({
-                        'OK': success_count,
-                        'Skip': skip_count,
-                        'Error': error_count,
-                        'ConsecErr': consecutive_errors
-                    })
+            # Process files sequentially
+            results = process_tiff_files(
+                tiff_files,
+                args.folder,
+                args.output,
+                args.compression,
+                args.quality,
+                args.threads,
+                state,
+                args.dry_run,
+                args.verify_lossless_exact,
+                args.ignore_compression_ratio,
+                show_progress=True
+            )
             
             # Summary
             logging.info("=" * 60)
             logging.info("Compression Summary:")
-            logging.info(f"  Successfully compressed: {success_count}")
-            logging.info(f"  Skipped: {skip_count}")
-            logging.info(f"  Errors: {error_count}")
+            logging.info(f"  Successfully compressed: {results['success_count']}")
+            logging.info(f"  Skipped: {results['skip_count']}")
+            logging.info(f"  Errors: {results['error_count']}")
             logging.info(f"  Already processed: {processed_count}")
-            if stop_processing:
-                logging.warning(f"  Compression stopped early after {consecutive_errors} consecutive errors")
+            if results['stop_processing']:
+                logging.warning(f"  Compression stopped early after {results['consecutive_errors']} consecutive errors")
                 logging.warning(f"  Warning file created: {os.path.join(args.folder, WARNING_FILE)}")
             logging.info("=" * 60)
     

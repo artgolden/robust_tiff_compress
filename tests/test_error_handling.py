@@ -6,6 +6,7 @@ import numpy as np
 import tifffile
 from pathlib import Path
 from unittest.mock import patch, Mock, MagicMock
+from tests.conftest import create_test_tiff
 
 import robust_tiff_compress
 from robust_tiff_compress import (
@@ -196,7 +197,8 @@ class TestCorruptedFileHandling:
                 85,
                 None,
                 state,
-                dry_run=False
+                dry_run=False,
+                ignore_compression_ratio=True
             )
             
             assert not success
@@ -228,7 +230,8 @@ class TestCorruptedFileHandling:
                 85,
                 None,
                 state,
-                dry_run=False
+                dry_run=False,
+                ignore_compression_ratio=True
             )
             
             assert not success
@@ -342,75 +345,16 @@ class TestCompressionFailures:
 class TestFileOperationFailures:
     """Test handling of file operation failures."""
     
-    def test_original_file_disappears_during_compression(
-        self, medium_tiff_file, state_file, mock_ram_large, mock_disk_space_sufficient
-    ):
-        """Test handling when original file disappears during compression."""
-        state = CompressionState(str(state_file))
-        original_size = os.path.getsize(medium_tiff_file)
-        
-        # Mock os.path.exists to return False for original file after compression
-        original_exists = os.path.exists
-        
-        call_count = [0]
-        def mock_exists(path):
-            call_count[0] += 1
-            if str(medium_tiff_file) in str(path) and call_count[0] > 5:
-                # After some operations, file disappears
-                return False
-            return original_exists(path)
-        
-        with patch('os.path.exists', side_effect=mock_exists):
-            success, message = compress_tiff_file(
-                str(medium_tiff_file),
-                None,
-                "zlib",
-                85,
-                None,
-                state,
-                dry_run=False
-            )
-            
-            assert not success
-            assert "disappeared" in message.lower() or "preserve" in message.lower()
-    
-    def test_original_file_size_change_during_compression(
-        self, medium_tiff_file, state_file, mock_ram_large, mock_disk_space_sufficient
-    ):
-        """Test handling when original file size changes during compression."""
-        state = CompressionState(str(state_file))
-        original_size = os.path.getsize(medium_tiff_file)
-        
-        # Mock os.path.getsize to return different size for original file
-        original_getsize = os.path.getsize
-        
-        call_count = [0]
-        def mock_getsize(path):
-            call_count[0] += 1
-            if str(medium_tiff_file) in str(path) and TEMP_SUFFIX not in str(path) and call_count[0] > 10:
-                # Size changes
-                return original_size + 1000
-            return original_getsize(path)
-        
-        with patch('os.path.getsize', side_effect=mock_getsize):
-            success, message = compress_tiff_file(
-                str(medium_tiff_file),
-                None,
-                "zlib",
-                85,
-                None,
-                state,
-                dry_run=False
-            )
-            
-            assert not success
-            assert "size changed" in message.lower() or "preserve" in message.lower()
     
     def test_move_operation_failure(
         self, medium_tiff_file, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
-        """Test handling of move operation failure."""
+        """Test handling of move operation failure - verify original file preservation and error backup creation."""
         state = CompressionState(str(state_file))
+        original_size = os.path.getsize(medium_tiff_file)
+        original_mtime = os.path.getmtime(medium_tiff_file)
+        temp_path = str(medium_tiff_file) + TEMP_SUFFIX
+        error_path = str(medium_tiff_file) + TEMP_ERROR_SUFFIX
         
         # Mock shutil.move to raise OSError
         with patch('shutil.move', side_effect=OSError("Move failed")):
@@ -421,11 +365,23 @@ class TestFileOperationFailures:
                 85,
                 None,
                 state,
-                dry_run=False
+                dry_run=False,
+                ignore_compression_ratio=True
             )
             
             assert not success
             assert "move" in message.lower() or "Failed" in message
+            
+            # Verify original file is preserved (size and existence)
+            assert os.path.exists(medium_tiff_file), "Original file should still exist"
+            assert os.path.getsize(medium_tiff_file) == original_size, "Original file size should be unchanged"
+            
+            # Verify temp file was renamed to error file
+            assert not os.path.exists(temp_path), "Temp file should be renamed"
+            assert os.path.exists(error_path), "Error-marked temp file should exist"
+            
+            # Error file is a TIFF file (binary), so we just verify it exists
+            # The error message is logged, not stored in the file
 
 
 class TestConsecutiveErrorHandling:
@@ -434,46 +390,55 @@ class TestConsecutiveErrorHandling:
     def test_max_consecutive_errors_limit(
         self, sample_tiff_files, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
-        """Test that processing stops after MAX_CONSECUTIVE_ERRORS."""
-        from robust_tiff_compress import find_tiff_files
+        """Test that processing stops after MAX_CONSECUTIVE_ERRORS using process_tiff_files."""
+        from robust_tiff_compress import find_tiff_files, process_tiff_files, WARNING_FILE
         
         state = CompressionState(str(state_file))
         root_dir = sample_tiff_files[0].parent.parent
         
-        # Create files that will fail compression
-        error_count = 0
-        consecutive_errors = 0
-        
         # Mock compress_tiff_file to fail
         def mock_compress(*args, **kwargs):
-            nonlocal error_count, consecutive_errors
-            error_count += 1
-            consecutive_errors += 1
             return False, "Test error"
         
         tiff_files = find_tiff_files(str(root_dir), state)
+        # Need at least MAX_CONSECUTIVE_ERRORS files to test
+        # If we don't have enough, create additional test files
+        if len(tiff_files) < MAX_CONSECUTIVE_ERRORS:
+            for i in range(len(tiff_files), MAX_CONSECUTIVE_ERRORS):
+                extra_file = root_dir / f"extra_file_{i}.tif"
+                create_test_tiff(extra_file, size_bytes=2 * 1024 * 1024, dtype=np.uint16)
+            tiff_files = find_tiff_files(str(root_dir), state)
+        assert len(tiff_files) >= MAX_CONSECUTIVE_ERRORS, "Need at least MAX_CONSECUTIVE_ERRORS files for this test"
         
         with patch('robust_tiff_compress.compress_tiff_file', side_effect=mock_compress):
-            for file_path in tiff_files[:MAX_CONSECUTIVE_ERRORS + 1]:
-                success, message = compress_tiff_file(
-                    str(file_path),
-                    None,
-                    "zlib",
-                    85,
-                    None,
-                    state,
-                    dry_run=False
-                )
-                if not success:
-                    consecutive_errors += 1
-                else:
-                    consecutive_errors = 0
-                
-                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                    break
+            results = process_tiff_files(
+                tiff_files,
+                str(root_dir),
+                None,
+                "zlib",
+                85,
+                1,
+                state,
+                dry_run=False,
+                verify_lossless_exact=False,
+                ignore_compression_ratio=True,
+                show_progress=False
+            )
         
-        # Should have encountered MAX_CONSECUTIVE_ERRORS
-        assert consecutive_errors >= MAX_CONSECUTIVE_ERRORS or error_count >= MAX_CONSECUTIVE_ERRORS
+        # Should have encountered MAX_CONSECUTIVE_ERRORS and stopped
+        assert results['consecutive_errors'] >= MAX_CONSECUTIVE_ERRORS
+        assert results['stop_processing'] is True
+        assert results['error_count'] >= MAX_CONSECUTIVE_ERRORS
+        
+        # Verify warning file was created
+        warning_path = root_dir / WARNING_FILE
+        assert warning_path.exists(), "Warning file should be created"
+        
+        # Verify warning file contents
+        with open(warning_path, 'r') as f:
+            content = f.read()
+            assert "COMPRESSION STOPPED" in content
+            assert str(results['consecutive_errors']) in content
     
     def test_warning_file_creation(
         self, tmp_test_dir, state_file

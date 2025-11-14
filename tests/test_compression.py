@@ -66,12 +66,11 @@ class TestBasicCompression:
         )
         
         assert success, f"Compression failed: {message}"
-        assert output_path.exists(), "Output file was not created"
         
         if "Compressed" in message:
             assert output_path.exists(), "Output file was not created"
             compressed_size = os.path.getsize(output_path)
-            assert compressed_size < original_size or "Skipped" in message
+            assert compressed_size < original_size
         # If skipped, output file may not be created, which is acceptable
     
     def test_zlib_lossless_verification(

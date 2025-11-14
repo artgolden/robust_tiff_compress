@@ -345,9 +345,11 @@ def mock_process_os_kill():
 def corrupted_tiff_file(tmp_test_dir):
     """Create a corrupted TIFF file (invalid data)."""
     file_path = tmp_test_dir / "corrupted.tif"
-    # Write invalid TIFF data
+    # Write invalid TIFF data - make it large enough to pass MIN_FILE_SIZE check
+    # MIN_FILE_SIZE is 1MB, so create a file slightly larger than that
+    invalid_data = b"NOT A VALID TIFF FILE" + b"\x00" * (MIN_FILE_SIZE + 1024)
     with open(file_path, 'wb') as f:
-        f.write(b"NOT A VALID TIFF FILE" + b"\x00" * 1000)
+        f.write(invalid_data)
     return file_path
 
 
