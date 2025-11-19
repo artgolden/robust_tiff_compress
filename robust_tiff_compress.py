@@ -48,13 +48,14 @@ MAX_CONSECUTIVE_ERRORS = 3
 
 class CompressionState:
     """Manages compression state for resumability per directory."""
-    
+
     def __init__(self, state_file: str):
         self.state_file = state_file
+        self.directory = os.path.dirname(state_file)
         self.state: Dict = {}
         self.lock = threading.Lock()
         self._load()
-    
+
     def _load(self):
         """Load state from file."""
         if os.path.exists(self.state_file):
@@ -66,14 +67,14 @@ class CompressionState:
                 self.state = {}
         else:
             self.state = {}
-    
+
     def _save(self):
         """Save state to file atomically."""
         # Ensure directory exists
         state_dir = os.path.dirname(self.state_file)
         if state_dir:
             os.makedirs(state_dir, exist_ok=True)
-        
+
         temp_file = self.state_file + ".tmp"
         try:
             with open(temp_file, 'w') as f:
@@ -84,20 +85,25 @@ class CompressionState:
             logging.error(f"Failed to save state file {self.state_file}: {e}")
             if os.path.exists(temp_file):
                 os.remove(temp_file)
-    
-    def is_processed(self, filename: str) -> bool:
+
+    def is_processed(self, file_path: str) -> bool:
         """Check if file has been processed (by filename only, not full path)."""
+        f_path = str(file_path)
+        if not f_path.startswith(self.directory):
+            raise ValueError(f"File path {f_path} is not in directory {self.directory}")
         with self.lock:
-            filepath = os.path.join(os.path.dirname(self.state_file), filename)
-            return filepath in self.state.get('processed', {})
-    
-    def mark_processed(self, filename: str, compression_ratio: float, 
+            return f_path in self.state.get("processed", {})
+
+    def mark_processed(self, file_path: str, compression_ratio: float, 
                       compression_type: str, original_size: int, compressed_size: int):
         """Mark file as processed (by filename only, not full path)."""
+        f_path = str(file_path)
+        if not f_path.startswith(self.directory):
+            raise ValueError(f"File path {f_path} is not in directory {self.directory}")
         with self.lock:
             if 'processed' not in self.state:
                 self.state['processed'] = {}
-            self.state['processed'][filename] = {
+            self.state['processed'][f_path] = {
                 'compression_ratio': compression_ratio,
                 'compression_type': compression_type,
                 'original_size': original_size,
@@ -105,7 +111,7 @@ class CompressionState:
                 'timestamp': datetime.now().isoformat()
             }
             self._save()
-    
+
     def get_processed_count(self) -> int:
         """Get count of processed files."""
         with self.lock:
@@ -606,10 +612,8 @@ def compress_tiff_file(
                 rename_temp_file_on_error(temp_path, file_path, f"OSError during file move: {e}")
                 return False, f"Failed to move compressed file: {e}", None
 
-        # Record success (using filename only, not full path)
-        filename = os.path.basename(file_path)
         state.mark_processed(
-            filename,
+            file_path,
             compression_ratio,
             compression,
             original_size,
@@ -680,7 +684,7 @@ def find_tiff_files(root_dir: str) -> List[str]:
             if file.lower().endswith(('.tif', '.tiff')):
                 file_path = os.path.join(root, file)
                 # Check if already processed (using filename only)
-                if not state.is_processed(file):
+                if not state.is_processed(file_path):
                     tiff_files.append(file_path)
 
         processed_dirs.add(root)

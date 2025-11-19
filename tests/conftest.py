@@ -212,16 +212,19 @@ def state_file(tmp_test_dir):
 @pytest.fixture
 def existing_state_file(state_file):
     """Create a state file with some existing processed files."""
+    dir_path = os.path.dirname(str(state_file))
+    file1_path = os.path.join(dir_path, "file1.tif")
+    file2_path = os.path.join(dir_path, "file2.tif")
     state_data = {
         "processed": {
-            "file1.tif": {  # Use filename only, not full path
+            file1_path: {  # Use filename only, not full path
                 "compression_ratio": 2.5,
                 "compression_type": "zlib",
                 "original_size": 1000000,
                 "compressed_size": 400000,
                 "timestamp": "2024-01-01T00:00:00"
             },
-            "file2.tif": {  # Use filename only, not full path
+            file2_path: {  # Use filename only, not full path
                 "compression_ratio": 3.0,
                 "compression_type": "jpeg_2000_lossy",
                 "original_size": 2000000,
