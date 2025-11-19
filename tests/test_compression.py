@@ -23,7 +23,6 @@ class TestBasicCompression:
         self, medium_tiff_file, state_file, mock_ram_large, mock_disk_space_sufficient, compression
     ):
         """Test compressing a medium file in place with both compression types."""
-        state = CompressionState(str(state_file))
         original_size = os.path.getsize(medium_tiff_file)
         
         success, message, compression_ratio = compress_tiff_file(
@@ -32,7 +31,7 @@ class TestBasicCompression:
             compression,
             85,
             None,
-            state,
+            None,  # Will use per-directory state
             dry_run=False,
             verify_lossless_exact=(compression == "zlib")
         )
@@ -50,7 +49,6 @@ class TestBasicCompression:
         self, medium_tiff_file, output_dir, state_file, mock_ram_large, mock_disk_space_sufficient, compression
     ):
         """Test compressing to output directory with both compression types."""
-        state = CompressionState(str(state_file))
         original_size = os.path.getsize(medium_tiff_file)
         output_path = output_dir / medium_tiff_file.name
         
@@ -60,7 +58,7 @@ class TestBasicCompression:
             compression,
             85,
             None,
-            state,
+            None,  # Will use per-directory state
             dry_run=False,
             verify_lossless_exact=(compression == "zlib")
         )
@@ -77,8 +75,6 @@ class TestBasicCompression:
         self, tiff_file_uint16, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test that zlib compression preserves data exactly (lossless)."""
-        state = CompressionState(str(state_file))
-        
         # Read original array
         original_array = tifffile.imread(str(tiff_file_uint16))
         
@@ -88,7 +84,7 @@ class TestBasicCompression:
             "zlib",
             85,
             None,
-            state,
+            None,  # Will use per-directory state
             dry_run=False,
             verify_lossless_exact=True
         )
@@ -109,8 +105,6 @@ class TestBasicCompression:
         self, tiff_file_uint16, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test that jpeg_2000_lossy compression preserves shape and dtype."""
-        state = CompressionState(str(state_file))
-        
         # Read original array
         original_array = tifffile.imread(str(tiff_file_uint16))
         original_shape = original_array.shape
@@ -122,7 +116,7 @@ class TestBasicCompression:
             "jpeg_2000_lossy",
             85,
             None,
-            state,
+            None,  # Will use per-directory state
             dry_run=False,
             verify_lossless_exact=False
         )
@@ -141,7 +135,6 @@ class TestBasicCompression:
         self, tiff_file_compressible, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test that files meeting compression ratio threshold are compressed."""
-        state = CompressionState(str(state_file))
         original_size = os.path.getsize(tiff_file_compressible)
         
         success, message, compression_ratio = compress_tiff_file(
@@ -150,7 +143,7 @@ class TestBasicCompression:
             "zlib",
             85,
             None,
-            state,
+            None,  # Will use per-directory state
             dry_run=False,
             verify_lossless_exact=True
         )
@@ -167,7 +160,6 @@ class TestFileSizeHandling:
         self, small_tiff_file, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test that files smaller than MIN_FILE_SIZE are skipped."""
-        state = CompressionState(str(state_file))
         original_size = os.path.getsize(small_tiff_file)
         assert original_size < MIN_FILE_SIZE
         
@@ -177,7 +169,7 @@ class TestFileSizeHandling:
             "zlib",
             85,
             None,
-            state,
+            None,  # Will use per-directory state
             dry_run=False
         )
         
@@ -189,7 +181,6 @@ class TestFileSizeHandling:
         self, very_large_tiff_file, state_file, mock_ram_small, mock_disk_space_sufficient
     ):
         """Test that files exceeding RAM limit are skipped."""
-        state = CompressionState(str(state_file))
         original_size = os.path.getsize(very_large_tiff_file)
         
         # Check if file exceeds RAM limit (20% of 1GB = 200MB)
@@ -202,7 +193,7 @@ class TestFileSizeHandling:
             "zlib",
             85,
             None,
-            state,
+            None,  # Will use per-directory state
             dry_run=False
         )
         
@@ -217,7 +208,6 @@ class TestFileSizeHandling:
         self, medium_tiff_file, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test that medium-sized files are compressed."""
-        state = CompressionState(str(state_file))
         original_size = os.path.getsize(medium_tiff_file)
         assert original_size >= MIN_FILE_SIZE
         
@@ -227,7 +217,7 @@ class TestFileSizeHandling:
             "zlib",
             85,
             None,
-            state,
+            None,  # Will use per-directory state
             dry_run=False
         )
         
@@ -243,8 +233,6 @@ class TestNestedDirectories:
         self, sample_tiff_files, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test compressing files in nested directory structure."""
-        state = CompressionState(str(state_file))
-        
         for tiff_file in sample_tiff_files:
             success, message, compression_ratio = compress_tiff_file(
                 str(tiff_file),
@@ -252,7 +240,7 @@ class TestNestedDirectories:
                 "zlib",
                 85,
                 None,
-                state,
+                None,  # Will use per-directory state
                 dry_run=False
             )
             assert success, f"Failed to compress {tiff_file}: {message}"
@@ -262,7 +250,6 @@ class TestNestedDirectories:
         self, nested_test_dir, sample_tiff_files, output_dir, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test compressing files to output directory preserving nested structure."""
-        state = CompressionState(str(state_file))
         root_dir = nested_test_dir  # Get root of test structure
         
         for tiff_file in sample_tiff_files:
@@ -276,7 +263,7 @@ class TestNestedDirectories:
                 "zlib",
                 85,
                 None,
-                state,
+                None,  # Will use per-directory state
                 dry_run=False
             )
             
@@ -303,14 +290,13 @@ class TestDataIntegrity:
         original_array = tifffile.imread(str(tiff_file))
         original_dtype = original_array.dtype
         
-        state = CompressionState(str(state_file))
         success, message, compression_ratio = compress_tiff_file(
             str(tiff_file),
             None,
             "zlib",
             85,
             None,
-            state,
+            None,  # Will use per-directory state
             dry_run=False,
             verify_lossless_exact=True
         )
@@ -327,14 +313,13 @@ class TestDataIntegrity:
         original_array = tifffile.imread(str(tiff_file_3d))
         original_shape = original_array.shape
         
-        state = CompressionState(str(state_file))
         success, message, compression_ratio = compress_tiff_file(
             str(tiff_file_3d),
             None,
             "zlib",
             85,
             None,
-            state,
+            None,  # Will use per-directory state
             dry_run=False,
             verify_lossless_exact=True
         )
@@ -348,15 +333,13 @@ class TestDataIntegrity:
         self, medium_tiff_file, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test that compressed files can be read back successfully."""
-        state = CompressionState(str(state_file))
-        
         success, message, compression_ratio = compress_tiff_file(
             str(medium_tiff_file),
             None,
             "zlib",
             85,
             None,
-            state,
+            None,  # Will use per-directory state
             dry_run=False
         )
         
@@ -376,7 +359,6 @@ class TestDryRun:
         self, medium_tiff_file, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test that dry-run mode doesn't modify files."""
-        state = CompressionState(str(state_file))
         original_size = os.path.getsize(medium_tiff_file)
         original_mtime = os.path.getmtime(medium_tiff_file)
         
@@ -386,7 +368,7 @@ class TestDryRun:
             "zlib",
             85,
             None,
-            state,
+            None,  # Will use per-directory state
             dry_run=True
         )
         
@@ -401,7 +383,6 @@ class TestDryRun:
         self, medium_tiff_file, output_dir, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test that dry-run mode doesn't create output files."""
-        state = CompressionState(str(state_file))
         output_path = output_dir / medium_tiff_file.name
         
         success, message, compression_ratio = compress_tiff_file(
@@ -410,7 +391,7 @@ class TestDryRun:
             "zlib",
             85,
             None,
-            state,
+            None,  # Will use per-directory state
             dry_run=True
         )
         

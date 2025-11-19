@@ -28,15 +28,13 @@ class TestDiskSpaceFailures:
         self, medium_tiff_file, state_file, mock_ram_large, mock_disk_space_insufficient
     ):
         """Test error handling when disk space is insufficient for in-place compression."""
-        state = CompressionState(str(state_file))
-        
         success, message, compression_ratio = compress_tiff_file(
             str(medium_tiff_file),
             None,
             "zlib",
             85,
             None,
-            state,
+            None,  # Will use per-directory state
             dry_run=False
         )
         
@@ -56,7 +54,7 @@ class TestDiskSpaceFailures:
             "zlib",
             85,
             None,
-            state,
+            None,  # Will use per-directory state
             dry_run=False
         )
         
@@ -82,7 +80,7 @@ class TestFilePermissionFailures:
             "zlib",
             85,
             None,
-            state,
+            None,  # Will use per-directory state
             dry_run=False
         )
         
@@ -103,7 +101,7 @@ class TestFilePermissionFailures:
             "zlib",
             85,
             None,
-            state,
+            None,  # Will use per-directory state
             dry_run=False
         )
         
@@ -118,15 +116,13 @@ class TestCorruptedFileHandling:
         self, corrupted_tiff_file, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test handling of invalid TIFF file."""
-        state = CompressionState(str(state_file))
-        
         success, message, compression_ratio = compress_tiff_file(
             str(corrupted_tiff_file),
             None,
             "zlib",
             85,
             None,
-            state,
+            None,  # Will use per-directory state
             dry_run=False
         )
         
@@ -137,15 +133,13 @@ class TestCorruptedFileHandling:
         self, empty_tiff_file, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test handling of empty TIFF file."""
-        state = CompressionState(str(state_file))
-        
         success, message, compression_ratio = compress_tiff_file(
             str(empty_tiff_file),
             None,
             "zlib",
             85,
             None,
-            state,
+            None,  # Will use per-directory state
             dry_run=False
         )
         
@@ -156,15 +150,13 @@ class TestCorruptedFileHandling:
         self, truncated_tiff_file, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test handling of truncated TIFF file."""
-        state = CompressionState(str(state_file))
-        
         success, message, compression_ratio = compress_tiff_file(
             str(truncated_tiff_file),
             None,
             "zlib",
             85,
             None,
-            state,
+            None,  # Will use per-directory state
             dry_run=False
         )
         
@@ -245,15 +237,13 @@ class TestCompressionFailures:
         self, tiff_file_not_compressible, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test skipping files that don't meet compression ratio threshold."""
-        state = CompressionState(str(state_file))
-        
         success, message, compression_ratio = compress_tiff_file(
             str(tiff_file_not_compressible),
             None,
             "zlib",
             85,
             None,
-            state,
+            None,  # Will use per-directory state
             dry_run=False
         )
         
@@ -393,21 +383,20 @@ class TestConsecutiveErrorHandling:
         """Test that processing stops after MAX_CONSECUTIVE_ERRORS using process_tiff_files."""
         from robust_tiff_compress import find_tiff_files, process_tiff_files, WARNING_FILE
         
-        state = CompressionState(str(state_file))
         root_dir = sample_tiff_files[0].parent.parent
         
         # Mock compress_tiff_file to fail
         def mock_compress(*args, **kwargs):
             return False, "Test error", None
         
-        tiff_files = find_tiff_files(str(root_dir), state)
+        tiff_files = find_tiff_files(str(root_dir))
         # Need at least MAX_CONSECUTIVE_ERRORS files to test
         # If we don't have enough, create additional test files
         if len(tiff_files) < MAX_CONSECUTIVE_ERRORS:
             for i in range(len(tiff_files), MAX_CONSECUTIVE_ERRORS):
                 extra_file = root_dir / f"extra_file_{i}.tif"
                 create_test_tiff(extra_file, size_bytes=2 * 1024 * 1024, dtype=np.uint16)
-            tiff_files = find_tiff_files(str(root_dir), state)
+            tiff_files = find_tiff_files(str(root_dir))
         assert len(tiff_files) >= MAX_CONSECUTIVE_ERRORS, "Need at least MAX_CONSECUTIVE_ERRORS files for this test"
         
         with patch('robust_tiff_compress.compress_tiff_file', side_effect=mock_compress):
@@ -418,7 +407,7 @@ class TestConsecutiveErrorHandling:
                 "zlib",
                 85,
                 1,
-                state,
+                None,  # Will use per-directory state
                 dry_run=False,
                 verify_lossless_exact=False,
                 ignore_compression_ratio=True,

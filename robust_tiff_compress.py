@@ -47,7 +47,7 @@ MAX_CONSECUTIVE_ERRORS = 3
 
 
 class CompressionState:
-    """Manages compression state for resumability."""
+    """Manages compression state for resumability per directory."""
     
     def __init__(self, state_file: str):
         self.state_file = state_file
@@ -62,13 +62,18 @@ class CompressionState:
                 with open(self.state_file, 'r') as f:
                     self.state = json.load(f)
             except (json.JSONDecodeError, IOError) as e:
-                logging.warning(f"Could not load state file: {e}. Starting fresh.")
+                logging.warning(f"Could not load state file {self.state_file}: {e}. Starting fresh.")
                 self.state = {}
         else:
             self.state = {}
     
     def _save(self):
         """Save state to file atomically."""
+        # Ensure directory exists
+        state_dir = os.path.dirname(self.state_file)
+        if state_dir:
+            os.makedirs(state_dir, exist_ok=True)
+        
         temp_file = self.state_file + ".tmp"
         try:
             with open(temp_file, 'w') as f:
@@ -76,22 +81,23 @@ class CompressionState:
             # Atomic move on POSIX systems
             os.replace(temp_file, self.state_file)
         except Exception as e:
-            logging.error(f"Failed to save state: {e}")
+            logging.error(f"Failed to save state file {self.state_file}: {e}")
             if os.path.exists(temp_file):
                 os.remove(temp_file)
     
-    def is_processed(self, file_path: str) -> bool:
-        """Check if file has been processed."""
+    def is_processed(self, filename: str) -> bool:
+        """Check if file has been processed (by filename only, not full path)."""
         with self.lock:
-            return file_path in self.state.get('processed', {})
+            filepath = os.path.join(os.path.dirname(self.state_file), filename)
+            return filepath in self.state.get('processed', {})
     
-    def mark_processed(self, file_path: str, compression_ratio: float, 
+    def mark_processed(self, filename: str, compression_ratio: float, 
                       compression_type: str, original_size: int, compressed_size: int):
-        """Mark file as processed."""
+        """Mark file as processed (by filename only, not full path)."""
         with self.lock:
             if 'processed' not in self.state:
                 self.state['processed'] = {}
-            self.state['processed'][file_path] = {
+            self.state['processed'][filename] = {
                 'compression_ratio': compression_ratio,
                 'compression_type': compression_type,
                 'original_size': original_size,
@@ -364,7 +370,7 @@ def compress_tiff_file(
     compression: str,
     quality: int,
     threads: Optional[int],
-    state: CompressionState,
+    state: Optional[CompressionState] = None,
     dry_run: bool = False,
     verify_lossless_exact: bool = False,
     ignore_compression_ratio: bool = False
@@ -372,10 +378,26 @@ def compress_tiff_file(
     """
     Compress a single TIFF file.
     
+    Args:
+        file_path: Path to the file to compress
+        output_path: Optional output path (None for in-place)
+        compression: Compression type
+        quality: Compression quality
+        threads: Number of threads
+        state: Optional CompressionState. If None, will use state file from file's directory.
+        dry_run: Whether to run in dry-run mode
+        verify_lossless_exact: Whether to verify lossless compression exactly
+        ignore_compression_ratio: Whether to ignore compression ratio threshold
+    
     Returns:
         (success, error_message, compression_ratio)
         compression_ratio is None if skipped or error, otherwise the ratio value
     """
+    # Get state file for the directory containing the file
+    if state is None:
+        file_dir = os.path.dirname(file_path)
+        state_file = get_state_file_for_directory(file_dir)
+        state = CompressionState(state_file)
     try:
         # Check file size
         original_size = os.path.getsize(file_path)
@@ -584,9 +606,10 @@ def compress_tiff_file(
                 rename_temp_file_on_error(temp_path, file_path, f"OSError during file move: {e}")
                 return False, f"Failed to move compressed file: {e}", None
 
-        # Record success
+        # Record success (using filename only, not full path)
+        filename = os.path.basename(file_path)
         state.mark_processed(
-            file_path,
+            filename,
             compression_ratio,
             compression,
             original_size,
@@ -603,20 +626,65 @@ def compress_tiff_file(
         return False, f"Unexpected error: {e}", None
 
 
-def find_tiff_files(root_dir: str, state: CompressionState) -> List[str]:
-    """Find all TIFF files that need compression."""
-    tiff_files = []
+def get_state_file_for_directory(directory: str) -> str:
+    """Get the path to the state file for a given directory."""
+    return os.path.join(directory, STATE_FILE)
+
+
+def count_processed_files(root_dir: str) -> int:
+    """Count total number of processed files across all directories."""
+    total_processed = 0
     for root, dirs, files in os.walk(root_dir):
-        # Skip hidden directories and state files
-        dirs[:] = [d for d in dirs if not d.startswith('.') and d != os.path.basename(STATE_FILE)]
+        # Skip hidden directories
+        dirs[:] = [d for d in dirs if not d.startswith('.')]
         
+        state_file = get_state_file_for_directory(root)
+        if os.path.exists(state_file):
+            state = CompressionState(state_file)
+            total_processed += state.get_processed_count()
+    
+    return total_processed
+
+
+def find_tiff_files(root_dir: str) -> List[str]:
+    """Find all TIFF files that need compression.
+    
+    Processes directories one at a time, checking for state file in each directory.
+    Only files in the same directory as the state file are tracked by that state file.
+    Skips hidden directories and directories named as STATE_FILE.
+    """
+    tiff_files = []
+    processed_dirs = set()  # Track directories we've already processed
+
+    for root, _, files in os.walk(root_dir):
+        # Skip hidden directories
+        if os.path.basename(root).startswith('.'):
+            continue
+        # Skip this directory if it is named after the STATE_FILE
+        if os.path.basename(root) == STATE_FILE:
+            continue
+
+        # Skip if we've already processed this directory (shouldn't happen, but safety check)
+        if root in processed_dirs:
+            continue
+
+        # Get state file for this directory
+        state_file = get_state_file_for_directory(root)
+        state = CompressionState(state_file)
+
+        # Process files in this directory
         for file in files:
+            # Skip state file itself
+            if file == STATE_FILE:
+                continue
             if file.lower().endswith(('.tif', '.tiff')):
                 file_path = os.path.join(root, file)
-                # Skip if already processed
-                if not state.is_processed(file_path):
+                # Check if already processed (using filename only)
+                if not state.is_processed(file):
                     tiff_files.append(file_path)
-    
+
+        processed_dirs.add(root)
+
     return sorted(tiff_files)
 
 
@@ -702,10 +770,10 @@ def process_tiff_files(
     compression: str,
     quality: int,
     threads: int,
-    state: CompressionState,
-    dry_run: bool,
-    verify_lossless_exact: bool,
-    ignore_compression_ratio: bool,
+    state: Optional[CompressionState] = None,
+    dry_run: bool = False,
+    verify_lossless_exact: bool = False,
+    ignore_compression_ratio: bool = False,
     show_progress: bool = True
 ) -> Dict[str, int]:
     """
@@ -718,7 +786,7 @@ def process_tiff_files(
         compression: Compression type
         quality: Compression quality
         threads: Number of threads
-        state: CompressionState instance
+        state: Optional CompressionState instance. If None, will use per-directory state files.
         dry_run: Whether to run in dry-run mode
         verify_lossless_exact: Whether to verify lossless compression exactly
         ignore_compression_ratio: Whether to ignore compression ratio threshold
@@ -755,13 +823,14 @@ def process_tiff_files(
                 output_path = os.path.join(output, rel_path)
             
             try:
+                # Pass None for state - compress_tiff_file will get state from file's directory
                 success, message, compression_ratio = compress_tiff_file(
                     file_path,
                     output_path,
                     compression,
                     quality,
                     threads,
-                    state,
+                    None,  # Will use per-directory state file
                     dry_run,
                     verify_lossless_exact,
                     ignore_compression_ratio
@@ -1073,10 +1142,7 @@ Examples:
     
     # Disclaimer about local filesystem requirement
     logging.info("NOTE: This tool is designed for LOCAL filesystems only. Network filesystems are not supported.")
-    
-    # Setup state management
-    state_file = os.path.join(args.folder, STATE_FILE)
-    state = CompressionState(state_file)
+    logging.info("NOTE: State files are created per directory. Each directory tracks only its own files.")
     
     # Cleanup temp files if requested
     if args.cleanup_temp:
@@ -1092,11 +1158,11 @@ Examples:
         with FileLock(lock_file):
             # Find files to compress
             logging.info("Scanning for TIFF files...")
-            tiff_files = find_tiff_files(args.folder, state)
+            tiff_files = find_tiff_files(args.folder)
             total_files = len(tiff_files)
-            processed_count = state.get_processed_count()
+            processed_count = count_processed_files(args.folder)
             
-            logging.info(f"Found {total_files} files to compress ({processed_count} already processed)")
+            logging.info(f"Found {total_files} files to compress ({processed_count} already processed across all directories)")
             
             if total_files == 0:
                 logging.info("No files to compress")
@@ -1110,7 +1176,7 @@ Examples:
                 args.compression,
                 args.quality,
                 args.threads,
-                state,
+                None,  # Will use per-directory state files
                 args.dry_run,
                 args.verify_lossless_exact,
                 args.ignore_compression_ratio,
@@ -1123,7 +1189,7 @@ Examples:
             logging.info(f"  Successfully compressed: {results['success_count']}")
             logging.info(f"  Skipped: {results['skip_count']}")
             logging.info(f"  Errors: {results['error_count']}")
-            logging.info(f"  Already processed: {processed_count}")
+            logging.info(f"  Already processed (across all directories): {processed_count}")
             if results['stop_processing']:
                 logging.warning(f"  Compression stopped early after {results['consecutive_errors']} consecutive errors")
                 logging.warning(f"  Warning file created: {os.path.join(args.folder, WARNING_FILE)}")

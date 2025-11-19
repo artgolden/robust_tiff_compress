@@ -15,6 +15,7 @@ from robust_tiff_compress import (
     verify_tiff_file,
     arrays_equal_exact,
     find_tiff_files,
+    get_state_file_for_directory,
     CompressionState,
 )
 
@@ -222,108 +223,103 @@ class TestArrayComparison:
 
 class TestFileFinding:
     """Test file finding functions."""
-    
+
     def test_find_tiff_files_nested_directories(self, nested_test_dir, sample_tiff_files):
         """Test find_tiff_files() with nested directory structure."""
-        state = CompressionState(str(nested_test_dir / "_compression_state.json"))
         root_dir = nested_test_dir
-        
-        tiff_files = find_tiff_files(str(root_dir), state)
-        
+
+        tiff_files = find_tiff_files(str(root_dir))
+
         # Should find all sample files
         found_paths = set(tiff_files)
         sample_paths = {str(f) for f in sample_tiff_files}
-        
+
         assert found_paths == sample_paths
-    
+
     def test_find_tiff_files_skip_processed(self, nested_test_dir, sample_tiff_files):
         """Test find_tiff_files() skipping already processed files."""
-        state_file = nested_test_dir / "_compression_state.json"
+        state_file = get_state_file_for_directory(str(nested_test_dir))
         state = CompressionState(str(state_file))
         root_dir = nested_test_dir
-        
+
         # Mark some files as processed
-        state.mark_processed(str(sample_tiff_files[0]), 2.0, "zlib", 1000000, 500000)
-        state.mark_processed(str(sample_tiff_files[1]), 2.5, "zlib", 2000000, 800000)
-        
-        tiff_files = find_tiff_files(str(root_dir), state)
-        
+        state.mark_processed(str(sample_tiff_files[-1]), 2.0, "zlib", 1000000, 500000)
+        state.mark_processed(str(sample_tiff_files[-2]), 2.5, "zlib", 2000000, 800000)
+
+        tiff_files = find_tiff_files(str(root_dir))
+
         # Should not include processed files
         found_paths = set(tiff_files)
-        processed_paths = {str(sample_tiff_files[0]), str(sample_tiff_files[1])}
-        
+        processed_paths = {str(sample_tiff_files[-1]), str(sample_tiff_files[-2])}
+
         assert not (found_paths & processed_paths)
         assert len(tiff_files) == len(sample_tiff_files) - 2
-    
+
     def test_find_tiff_files_skip_hidden_directories(self, tmp_test_dir):
         """Test find_tiff_files() skipping hidden directories."""
         from tests.conftest import create_test_tiff
-        
+
         # Create files in hidden directory
         hidden_dir = tmp_test_dir / ".hidden"
         hidden_dir.mkdir()
         hidden_file = hidden_dir / "file.tif"
         create_test_tiff(hidden_file, size_bytes=2 * 1024 * 1024)
-        
+
         # Create files in normal directory
         normal_dir = tmp_test_dir / "normal"
         normal_dir.mkdir()
         normal_file = normal_dir / "file.tif"
         create_test_tiff(normal_file, size_bytes=2 * 1024 * 1024)
-        
-        state = CompressionState(str(tmp_test_dir / "_compression_state.json"))
-        tiff_files = find_tiff_files(str(tmp_test_dir), state)
-        
+
+        tiff_files = find_tiff_files(str(tmp_test_dir))
+
         # Should not find files in hidden directory
         found_paths = {str(f) for f in tiff_files}
         assert str(hidden_file) not in found_paths
         assert str(normal_file) in found_paths
-    
+
     def test_find_tiff_files_case_insensitive_extensions(self, tmp_test_dir):
         """Test find_tiff_files() with case-insensitive extensions."""
         from tests.conftest import create_test_tiff
-        
+
         # Create files with different case extensions
         file1 = tmp_test_dir / "file1.TIF"
         file2 = tmp_test_dir / "file2.TIFF"
         file3 = tmp_test_dir / "file3.tif"
         file4 = tmp_test_dir / "file4.tiff"
-        
+
         for f in [file1, file2, file3, file4]:
             create_test_tiff(f, size_bytes=1 * 1024 * 1024)
-        
-        state = CompressionState(str(tmp_test_dir / "_compression_state.json"))
-        tiff_files = find_tiff_files(str(tmp_test_dir), state)
-        
+
+        tiff_files = find_tiff_files(str(tmp_test_dir))
+
         # Should find all case variations
         found_paths = {str(f) for f in tiff_files}
         assert len(found_paths) == 4
         assert all(str(f) in found_paths for f in [file1, file2, file3, file4])
-    
+
     def test_find_tiff_files_empty_directory(self, tmp_test_dir):
         """Test find_tiff_files() with empty directory."""
-        state = CompressionState(str(tmp_test_dir / "_compression_state.json"))
-        tiff_files = find_tiff_files(str(tmp_test_dir), state)
-        
+        tiff_files = find_tiff_files(str(tmp_test_dir))
+
         assert len(tiff_files) == 0
-    
+
     def test_find_tiff_files_skip_state_file_directory(self, tmp_test_dir):
         """Test find_tiff_files() skipping directory named after state file."""
         from tests.conftest import create_test_tiff
-        
+
         # Create a directory with state file name
         state_dir = tmp_test_dir / "_compression_state.json"
         state_dir.mkdir()
         file_in_state_dir = state_dir / "file.tif"
         create_test_tiff(file_in_state_dir, size_bytes=1 * 1024 * 1024)
-        
+
         # Create file in normal directory
         normal_file = tmp_test_dir / "file.tif"
         create_test_tiff(normal_file, size_bytes=1 * 1024 * 1024)
-        
-        state = CompressionState(str(tmp_test_dir / "_compression_state.json"))
-        tiff_files = find_tiff_files(str(tmp_test_dir), state)
-        
+
+        tiff_files = find_tiff_files(str(tmp_test_dir))
+
         # Should skip directory with state file name
         found_paths = {str(f) for f in tiff_files}
         assert str(file_in_state_dir) not in found_paths

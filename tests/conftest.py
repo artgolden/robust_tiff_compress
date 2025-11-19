@@ -214,14 +214,14 @@ def existing_state_file(state_file):
     """Create a state file with some existing processed files."""
     state_data = {
         "processed": {
-            "/path/to/file1.tif": {
+            "file1.tif": {  # Use filename only, not full path
                 "compression_ratio": 2.5,
                 "compression_type": "zlib",
                 "original_size": 1000000,
                 "compressed_size": 400000,
                 "timestamp": "2024-01-01T00:00:00"
             },
-            "/path/to/file2.tif": {
+            "file2.tif": {  # Use filename only, not full path
                 "compression_ratio": 3.0,
                 "compression_type": "jpeg_2000_lossy",
                 "original_size": 2000000,
@@ -449,6 +449,7 @@ def sample_tiff_files(nested_test_dir):
         ("dir2", "subdir3", "file3.tif"),
         ("dir3", "file4.tif"),
         ("file5.tif"),  # Root level
+        ("file6.tif"),  # Root level
     ]
     
     for location in locations:

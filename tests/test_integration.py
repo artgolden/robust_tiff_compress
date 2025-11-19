@@ -13,7 +13,6 @@ import robust_tiff_compress
 from robust_tiff_compress import (
     find_tiff_files,
     compress_tiff_file,
-    CompressionState,
     FileLock,
     cleanup_temp_files,
     process_tiff_files,
@@ -28,14 +27,13 @@ class TestFullWorkflow:
         self, sample_tiff_files, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test complete compression run with multiple files."""
-        state = CompressionState(str(state_file))
         root_dir = sample_tiff_files[0].parent.parent
         
         success_count = 0
         skip_count = 0
         error_count = 0
         
-        tiff_files = find_tiff_files(str(root_dir), state)
+        tiff_files = find_tiff_files(str(root_dir))
         
         for file_path in tiff_files:
             success, message, compression_ratio = compress_tiff_file(
@@ -44,7 +42,7 @@ class TestFullWorkflow:
                 "zlib",
                 85,
                 None,
-                state,
+                None,  # Will use per-directory state
                 dry_run=False
             )
             
@@ -58,13 +56,11 @@ class TestFullWorkflow:
         
         # Should have processed some files
         assert success_count + skip_count + error_count == len(tiff_files)
-        assert state.get_processed_count() >= success_count
     
     def test_dry_run_mode(
         self, sample_tiff_files, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test dry-run mode doesn't modify files."""
-        state = CompressionState(str(state_file))
         root_dir = sample_tiff_files[0].parent.parent
         
         # Record original file sizes and modification times
@@ -75,7 +71,7 @@ class TestFullWorkflow:
                 'mtime': os.path.getmtime(file_path)
             }
         
-        tiff_files = find_tiff_files(str(root_dir), state)
+        tiff_files = find_tiff_files(str(root_dir))
         
         for file_path in tiff_files:
             success, message, compression_ratio = compress_tiff_file(
@@ -84,7 +80,7 @@ class TestFullWorkflow:
                 "zlib",
                 85,
                 None,
-                state,
+                None,  # Will use per-directory state
                 dry_run=True
             )
             assert success
@@ -124,11 +120,10 @@ class TestFullWorkflow:
         self, sample_tiff_files, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test resuming compression after partial completion."""
-        state = CompressionState(str(state_file))
         root_dir = sample_tiff_files[0].parent.parent
         
         # Process first two files
-        tiff_files = find_tiff_files(str(root_dir), state)
+        tiff_files = find_tiff_files(str(root_dir))
         files_to_process = tiff_files[:2]
         
         for file_path in files_to_process:
@@ -138,22 +133,16 @@ class TestFullWorkflow:
                 "zlib",
                 85,
                 None,
-                state,
+                None,  # Will use per-directory state
                 dry_run=False
             )
-            # May succeed or skip, but should be recorded in state
-        
-        initial_processed = state.get_processed_count()
-        
-        # Create new state instance (simulating resume)
-        state2 = CompressionState(str(state_file))
+            # May succeed or skip, but should be recorded in per-directory state
         
         # Find files again (should skip processed ones)
-        remaining_files = find_tiff_files(str(root_dir), state2)
+        remaining_files = find_tiff_files(str(root_dir))
         
         # Should have fewer files (processed ones excluded)
         assert len(remaining_files) <= len(tiff_files)
-        assert state2.get_processed_count() == initial_processed
 
 
 class TestCommandLineInterface:
@@ -233,10 +222,9 @@ class TestRealWorldScenarios:
             create_test_tiff(file_path, size_bytes=2 * 1024 * 1024, dtype=np.uint16)
             files_created.append(file_path)
         
-        state = CompressionState(str(state_file))
         root_dir = nested_test_dir
         
-        tiff_files = find_tiff_files(str(root_dir), state)
+        tiff_files = find_tiff_files(str(root_dir))
         assert len(tiff_files) >= 50
         
         # Process all files
@@ -248,7 +236,7 @@ class TestRealWorldScenarios:
                 "zlib",
                 85,
                 None,
-                state,
+                None,  # Will use per-directory state
                 dry_run=False
             )
             if success and "Compressed" in message:
@@ -256,7 +244,6 @@ class TestRealWorldScenarios:
         
         # Should have processed some files
         assert success_count >= 0
-        assert state.get_processed_count() >= success_count
     
     def test_mixed_success_skip_error_scenarios(
         self, tmp_test_dir, state_file, mock_ram_large, mock_disk_space_sufficient, corrupted_tiff_file
@@ -276,8 +263,6 @@ class TestRealWorldScenarios:
         # 3. Corrupted file (should error) - using fixture
         corrupted_file = corrupted_tiff_file
         
-        state = CompressionState(str(state_file))
-        
         # Use process_tiff_files() which handles error counting
         files = [str(small_file), str(medium_file), str(corrupted_file)]
         threads = calculate_optimal_threads()
@@ -289,7 +274,7 @@ class TestRealWorldScenarios:
             compression="zlib",
             quality=85,
             threads=threads,
-            state=state,
+            state=None,  # Will use per-directory state
             dry_run=False,
             verify_lossless_exact=False,
             ignore_compression_ratio=False,
@@ -311,8 +296,7 @@ class TestRealWorldScenarios:
         root_dir = sample_tiff_files[0].parent.parent
         
         # First run
-        state1 = CompressionState(str(state_file))
-        tiff_files1 = find_tiff_files(str(root_dir), state1)
+        tiff_files1 = find_tiff_files(str(root_dir))
         
         # Process first file
         if tiff_files1:
@@ -322,20 +306,12 @@ class TestRealWorldScenarios:
                 "zlib",
                 85,
                 None,
-                state1,
+                None,  # Will use per-directory state
                 dry_run=False
             )
-            processed_count1 = state1.get_processed_count()
         
-        # Second run (new state instance)
-        state2 = CompressionState(str(state_file))
-        processed_count2 = state2.get_processed_count()
-        
-        # Should see files from first run
-        assert processed_count2 == processed_count1
-        
-        # Find files again
-        tiff_files2 = find_tiff_files(str(root_dir), state2)
+        # Find files again (should skip processed one)
+        tiff_files2 = find_tiff_files(str(root_dir))
         
         # Should have fewer files (processed one excluded)
         assert len(tiff_files2) <= len(tiff_files1)
@@ -397,7 +373,6 @@ class TestOutputDirectoryIntegration:
         self, nested_test_dir, sample_tiff_files, output_dir, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test that output directory preserves nested directory structure."""
-        state = CompressionState(str(state_file))
         root_dir = nested_test_dir
         
         for tiff_file in sample_tiff_files[:3]:  # Process first 3 files
@@ -410,7 +385,7 @@ class TestOutputDirectoryIntegration:
                 "zlib",
                 85,
                 None,
-                state,
+                None,  # Will use per-directory state
                 dry_run=False
             )
             
