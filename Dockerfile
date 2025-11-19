@@ -31,6 +31,7 @@ EXPOSE 8000
 
 # Set environment variable for port (can be overridden)
 ENV PORT=8000
+ENV PRESERVE_OWNERSHIP=1
 
 # Run webserver
 # Use sh to read PORT environment variable

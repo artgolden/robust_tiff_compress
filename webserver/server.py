@@ -239,6 +239,19 @@ class CompressionRequest(BaseModel):
     ignore_compression_ratio: bool = Field(default=False, description="Ignore compression ratio threshold")
     force_recompress_skipped: bool = Field(default=False, description="Force recompress skipped files")
     force_recompress_processed: bool = Field(default=False, description="Force recompress processed files")
+    
+    @property
+    def preserve_ownership(self) -> bool:
+        """Determine preserve_ownership status from environment variable, default field, or provided value."""
+        import os
+        env_value = os.getenv('PRESERVE_OWNERSHIP', '')
+        if env_value.lower() in ('1', 'true', 'yes'):
+            return True
+        # Fallback to default or provided value if env var not set/enabled
+        return getattr(self, 'preserve_ownership_internal', True)
+
+    # The internal field actually stores the input value (but users should access .preserve_ownership property)
+    preserve_ownership_internal: bool = Field(default=True, alias="preserve_ownership", description="Preserve file ownership and permissions (useful when running as root in Docker)")
 
 
 def progress_callback(current_file: str, current_index: int, total_files: int, stats: Dict) -> bool:
@@ -275,7 +288,8 @@ def run_compression_thread(request: CompressionRequest):
             ignore_compression_ratio=request.ignore_compression_ratio,
             force_recompress_skipped=request.force_recompress_skipped,
             force_recompress_processed=request.force_recompress_processed,
-            progress_callback=progress_callback
+            progress_callback=progress_callback,
+            preserve_ownership=request.preserve_ownership
         )
         
         if compression_state.should_stop():

@@ -46,14 +46,98 @@ WARNING_FILE = "_compression_stopped_warning.txt"
 MAX_CONSECUTIVE_ERRORS = 3
 
 
+def get_file_ownership(file_path: str) -> Optional[Tuple[int, int, int]]:
+    """
+    Get file ownership (uid, gid) and permissions (mode).
+    
+    Args:
+        file_path: Path to the file
+        
+    Returns:
+        Tuple of (uid, gid, mode) if successful, None otherwise
+    """
+    try:
+        stat_info = os.stat(file_path)
+        return (stat_info.st_uid, stat_info.st_gid, stat_info.st_mode)
+    except OSError:
+        return None
+
+
+def set_file_ownership(file_path: str, uid: int, gid: int, mode: Optional[int] = None) -> bool:
+    """
+    Set file ownership (uid, gid) and optionally permissions (mode).
+    
+    Args:
+        file_path: Path to the file
+        uid: User ID
+        gid: Group ID
+        mode: Optional file mode (permissions). If None, only ownership is set.
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        os.chown(file_path, uid, gid)
+        if mode is not None:
+            os.chmod(file_path, mode)
+        return True
+    except (OSError, PermissionError) as e:
+        logging.warning(f"Failed to set ownership/permissions for {file_path}: {e}")
+        return False
+
+
+def get_directory_ownership(directory: str) -> Optional[Tuple[int, int, int]]:
+    """
+    Get directory ownership (uid, gid) and permissions (mode).
+    
+    Args:
+        directory: Path to the directory
+        
+    Returns:
+        Tuple of (uid, gid, mode) if successful, None otherwise
+    """
+    try:
+        stat_info = os.stat(directory)
+        return (stat_info.st_uid, stat_info.st_gid, stat_info.st_mode)
+    except OSError:
+        return None
+
+
+def set_state_file_ownership(state_file: str) -> bool:
+    """
+    Set STATE_FILE ownership to match its directory and set read+write permissions for owner.
+    
+    Args:
+        state_file: Path to the state file
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    state_dir = os.path.dirname(state_file)
+    if not state_dir:
+        state_dir = '.'
+    
+    # Get directory ownership
+    dir_ownership = get_directory_ownership(state_dir)
+    if dir_ownership is None:
+        return False
+    
+    uid, gid, _ = dir_ownership
+    
+    # Set ownership to match directory
+    # Set permissions to read+write for owner (0o600 = rw-------)
+    return set_file_ownership(state_file, uid, gid, 0o600)
+
+
 class CompressionState:
     """Manages compression state for resumability per directory."""
 
-    def __init__(self, state_file: str):
+    def __init__(self, state_file: str, preserve_ownership: bool = False):
         self.state_file = state_file
         self.directory = os.path.dirname(state_file)
         self.state: Dict = {}
         self.lock = threading.Lock()
+        self.preserve_ownership = preserve_ownership
         self._load()
 
     def _load(self):
@@ -81,6 +165,10 @@ class CompressionState:
                 json.dump(self.state, f, indent=2)
             # Atomic move on POSIX systems
             os.replace(temp_file, self.state_file)
+            
+            # Set ownership and permissions if preserve_ownership is enabled
+            if self.preserve_ownership:
+                set_state_file_ownership(self.state_file)
         except Exception as e:
             logging.error(f"Failed to save state file {self.state_file}: {e}")
             if os.path.exists(temp_file):
@@ -407,7 +495,8 @@ def compress_tiff_file(
     state: Optional[CompressionState] = None,
     dry_run: bool = False,
     verify_lossless_exact: bool = False,
-    ignore_compression_ratio: bool = False
+    ignore_compression_ratio: bool = False,
+    preserve_ownership: bool = False
 ) -> Tuple[bool, Optional[str], Optional[float]]:
     """
     Compress a single TIFF file.
@@ -422,6 +511,7 @@ def compress_tiff_file(
         dry_run: Whether to run in dry-run mode
         verify_lossless_exact: Whether to verify lossless compression exactly
         ignore_compression_ratio: Whether to ignore compression ratio threshold
+        preserve_ownership: Whether to preserve file ownership and permissions (useful when running as root)
     
     Returns:
         (success, error_message, compression_ratio)
@@ -431,7 +521,15 @@ def compress_tiff_file(
     if state is None:
         file_dir = os.path.dirname(file_path)
         state_file = get_state_file_for_directory(file_dir)
-        state = CompressionState(state_file)
+        state = CompressionState(state_file, preserve_ownership=preserve_ownership)
+    
+    # Record original file ownership and permissions if preserve_ownership is enabled
+    original_ownership = None
+    if preserve_ownership:
+        original_ownership = get_file_ownership(file_path)
+        if original_ownership is None:
+            logging.warning(f"Could not get ownership for {file_path}, ownership preservation may fail")
+    
     try:
         # Check file size
         original_size = os.path.getsize(file_path)
@@ -646,6 +744,12 @@ def compress_tiff_file(
                 rename_temp_file_on_error(temp_path, file_path, f"OSError during file move: {e}")
                 return False, f"Failed to move compressed file: {e}", None
 
+        # Restore ownership and permissions if preserve_ownership is enabled
+        if preserve_ownership and original_ownership is not None:
+            uid, gid, mode = original_ownership
+            if not set_file_ownership(final_path, uid, gid, mode):
+                logging.warning(f"Failed to restore ownership/permissions for {final_path}")
+        
         state.mark_processed(
             file_path,
             compression_ratio,
@@ -850,7 +954,8 @@ def process_tiff_files(
     verify_lossless_exact: bool = False,
     ignore_compression_ratio: bool = False,
     show_progress: bool = True,
-    progress_callback: Optional[Callable[[str, int, int, Dict], bool]] = None
+    progress_callback: Optional[Callable[[str, int, int, Dict], bool]] = None,
+    preserve_ownership: bool = False
 ) -> Dict[str, int]:
     """
     Process a list of TIFF files for compression.
@@ -869,6 +974,7 @@ def process_tiff_files(
         show_progress: Whether to show progress bar
         progress_callback: Optional callback function(current_file, current_index, total_files, stats) -> bool
                           Called before processing each file. Returns True to continue, False to stop.
+        preserve_ownership: Whether to preserve file ownership and permissions (useful when running as root)
     
     Returns:
         Dictionary with keys: success_count, skip_count, error_count, consecutive_errors, compression_ratios
@@ -926,7 +1032,8 @@ def process_tiff_files(
                     None,  # Will use per-directory state file
                     dry_run,
                     verify_lossless_exact,
-                    ignore_compression_ratio
+                    ignore_compression_ratio,
+                    preserve_ownership
                 )
                 
                 if success:
@@ -1117,7 +1224,8 @@ def run_compression(
     ignore_compression_ratio: bool = False,
     force_recompress_skipped: bool = False,
     force_recompress_processed: bool = False,
-    progress_callback: Optional[Callable[[str, int, int, Dict], bool]] = None
+    progress_callback: Optional[Callable[[str, int, int, Dict], bool]] = None,
+    preserve_ownership: bool = False
 ) -> Dict:
     """
     Run compression on TIFF files in the specified folder.
@@ -1137,6 +1245,9 @@ def run_compression(
         force_recompress_processed: Force recompression of previously processed files
         progress_callback: Optional callback function(current_file, current_index, total_files, stats) -> bool
                           Returns True to continue, False to stop compression
+        preserve_ownership: Whether to preserve file ownership and permissions (useful when running as root in Docker)
+                           When enabled, compressed files retain original ownership/permissions, and STATE_FILE
+                           will have ownership matching its directory with read+write for owner.
     
     Returns:
         Dictionary with compression results including success_count, skip_count, error_count, etc.
@@ -1185,6 +1296,8 @@ def run_compression(
         logging.info("FORCE RECOMPRESS SKIPPED MODE - Will recompress all previously skipped files")
     if force_recompress_processed:
         logging.info("FORCE RECOMPRESS PROCESSED MODE - Will recompress all previously processed files")
+    if preserve_ownership:
+        logging.info("PRESERVE OWNERSHIP MODE - File ownership and permissions will be preserved")
     
     # Disclaimer about local filesystem requirement
     logging.info("NOTE: This tool is designed for LOCAL filesystems only. Network filesystems are not supported.")
@@ -1238,7 +1351,8 @@ def run_compression(
             verify_lossless_exact,
             ignore_compression_ratio,
             show_progress=True,
-            progress_callback=progress_callback
+            progress_callback=progress_callback,
+            preserve_ownership=preserve_ownership
         )
         
         # Summary
@@ -1360,7 +1474,20 @@ Examples:
              'This will recompress files that were successfully compressed in previous runs.'
     )
     
+    parser.add_argument(
+        '--preserve-ownership',
+        action='store_true',
+        help='Preserve file ownership and permissions when compressing files. '
+             'Useful when running as root (e.g., in Docker containers). '
+             'Compressed files will retain original ownership/permissions, '
+             'and STATE_FILE will have ownership matching its directory with read+write for owner.'
+             'Also set by PRESERVE_OWNERSHIP environment variable.'
+    )
+    
     args = parser.parse_args()
+    
+    # Check environment variable as fallback (useful for Docker)
+    preserve_ownership = args.preserve_ownership or os.getenv('PRESERVE_OWNERSHIP', '').lower() in ('1', 'true', 'yes')
     
     try:
         run_compression(
@@ -1375,7 +1502,8 @@ Examples:
             verify_lossless_exact=args.verify_lossless_exact,
             ignore_compression_ratio=args.ignore_compression_ratio,
             force_recompress_skipped=args.force_recompress_skipped,
-            force_recompress_processed=args.force_recompress_processed
+            force_recompress_processed=args.force_recompress_processed,
+            preserve_ownership=preserve_ownership
         )
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
