@@ -19,7 +19,7 @@ import time
 import logging
 import multiprocessing
 from datetime import datetime
-from typing import Optional, Dict, Tuple, List
+from typing import Optional, Dict, Tuple, List, Callable
 import threading
 
 try:
@@ -849,7 +849,8 @@ def process_tiff_files(
     dry_run: bool = False,
     verify_lossless_exact: bool = False,
     ignore_compression_ratio: bool = False,
-    show_progress: bool = True
+    show_progress: bool = True,
+    progress_callback: Optional[Callable[[str, int, int, Dict], bool]] = None
 ) -> Dict[str, int]:
     """
     Process a list of TIFF files for compression.
@@ -866,6 +867,8 @@ def process_tiff_files(
         verify_lossless_exact: Whether to verify lossless compression exactly
         ignore_compression_ratio: Whether to ignore compression ratio threshold
         show_progress: Whether to show progress bar
+        progress_callback: Optional callback function(current_file, current_index, total_files, stats) -> bool
+                          Called before processing each file. Returns True to continue, False to stop.
     
     Returns:
         Dictionary with keys: success_count, skip_count, error_count, consecutive_errors, compression_ratios
@@ -887,9 +890,24 @@ def process_tiff_files(
         pbar = None
     
     try:
-        for file_path in tiff_files:
+        for index, file_path in enumerate(tiff_files):
             if stop_processing:
                 break
+            
+            # Call progress callback if provided
+            if progress_callback is not None:
+                stats = {
+                    'success_count': success_count,
+                    'skip_count': skip_count,
+                    'error_count': error_count,
+                    'consecutive_errors': consecutive_errors,
+                    'total_files': total_files
+                }
+                should_continue = progress_callback(file_path, index, total_files, stats)
+                if not should_continue:
+                    stop_processing = True
+                    logging.info("Compression stopped by progress callback")
+                    break
             
             # Determine output path if output folder is specified
             output_path = None
@@ -1086,6 +1104,162 @@ def create_warning_file(root_dir: str, error_count: int, last_errors: List[Tuple
         logging.error(f"Failed to create warning file {warning_path}: {e}")
 
 
+def run_compression(
+    folder: str,
+    compression: str = 'zlib',
+    quality: int = 85,
+    threads: Optional[int] = None,
+    output: Optional[str] = None,
+    dry_run: bool = False,
+    cleanup_temp: bool = False,
+    cleanup_error_files: bool = False,
+    verify_lossless_exact: bool = False,
+    ignore_compression_ratio: bool = False,
+    force_recompress_skipped: bool = False,
+    force_recompress_processed: bool = False,
+    progress_callback: Optional[Callable[[str, int, int, Dict], bool]] = None
+) -> Dict:
+    """
+    Run compression on TIFF files in the specified folder.
+    
+    Args:
+        folder: Folder containing TIFF files to compress (recursive)
+        compression: Compression algorithm ('zlib' or 'jpeg_2000_lossy')
+        quality: Compression quality for lossy compression (0-100)
+        threads: Number of threads for tifffile compression (None for auto)
+        output: Output folder (None for in-place compression)
+        dry_run: Show what would be compressed without actually compressing
+        cleanup_temp: Clean up temporary files from previous runs before starting
+        cleanup_error_files: Also clean up .compressing.ERROR files
+        verify_lossless_exact: Verify bit-exact match for lossless compression
+        ignore_compression_ratio: Ignore compression ratio threshold requirement
+        force_recompress_skipped: Force recompression of previously skipped files
+        force_recompress_processed: Force recompression of previously processed files
+        progress_callback: Optional callback function(current_file, current_index, total_files, stats) -> bool
+                          Returns True to continue, False to stop compression
+    
+    Returns:
+        Dictionary with compression results including success_count, skip_count, error_count, etc.
+    
+    Raises:
+        ValueError: If input parameters are invalid
+        RuntimeError: If compression fails
+    """
+    # Validate inputs
+    if not os.path.isdir(folder):
+        raise ValueError(f"{folder} is not a directory")
+    
+    if output and not os.path.isdir(os.path.dirname(os.path.abspath(output))):
+        raise ValueError(f"Parent directory of {output} does not exist")
+    
+    if quality < 0 or quality > 100:
+        raise ValueError("Quality must be between 0 and 100")
+    
+    # Setup logging
+    setup_logging(log_dir=folder)
+    
+    # Calculate threads for tifffile compression
+    if threads is None:
+        threads = calculate_optimal_threads()
+    
+    # Get available RAM info (fail if detection fails)
+    try:
+        available_ram = get_available_ram()
+    except RuntimeError as e:
+        logging.error(f"Failed to detect free RAM: {e}")
+        raise RuntimeError(f"Failed to detect free RAM: {e}") from e
+    max_file_size = int(available_ram * RAM_SIZE_LIMIT_RATIO)
+    
+    logging.info("Starting compression (sequential processing)")
+    logging.info(f"Tifffile compression threads: {threads}")
+    logging.info(f"Compression: {compression}, Quality: {quality}")
+    logging.info(f"Free RAM: {available_ram / (1024**3):.2f} GB, Max file size: {max_file_size / (1024**3):.2f} GB (40% of free RAM)")
+    logging.info(f"Folder: {folder}")
+    if output:
+        logging.info(f"Output folder: {output}")
+    if dry_run:
+        logging.info("DRY RUN MODE - No files will be modified")
+    if verify_lossless_exact:
+        logging.info("BIT-EXACT VERIFICATION MODE - Lossless compressed files will be verified for bit-exact match")
+    if force_recompress_skipped:
+        logging.info("FORCE RECOMPRESS SKIPPED MODE - Will recompress all previously skipped files")
+    if force_recompress_processed:
+        logging.info("FORCE RECOMPRESS PROCESSED MODE - Will recompress all previously processed files")
+    
+    # Disclaimer about local filesystem requirement
+    logging.info("NOTE: This tool is designed for LOCAL filesystems only. Network filesystems are not supported.")
+    logging.info("NOTE: State files are created per directory. Each directory tracks only its own files.")
+    
+    # Cleanup temp files if requested
+    if cleanup_temp:
+        cleaned = cleanup_temp_files(folder, cleanup_error_files=cleanup_error_files)
+        if cleaned > 0:
+            logging.info(f"Cleaned up {cleaned} temporary files")
+        if cleanup_error_files:
+            logging.warning("Cleaned up error-marked files - ensure you've investigated any issues")
+    
+    # Acquire lock
+    lock_file = os.path.join(folder, LOCK_FILE)
+    with FileLock(lock_file):
+        # Find files to compress
+        logging.info("Scanning for TIFF files...")
+        tiff_files = find_tiff_files(
+            folder,
+            force_recompress_skipped=force_recompress_skipped,
+            force_recompress_processed=force_recompress_processed
+        )
+        total_files = len(tiff_files)
+        processed_count = count_processed_files(folder)
+        skipped_count = count_skipped_files(folder)
+        
+        logging.info(f"Found {total_files} files to compress ({processed_count} already processed, {skipped_count} already skipped across all directories)")
+        
+        if total_files == 0:
+            logging.info("No files to compress")
+            return {
+                'success_count': 0,
+                'skip_count': 0,
+                'error_count': 0,
+                'consecutive_errors': 0,
+                'stop_processing': False,
+                'compression_ratios': []
+            }
+        
+        # Process files sequentially
+        results = process_tiff_files(
+            tiff_files,
+            folder,
+            output,
+            compression,
+            quality,
+            threads,
+            None,  # Will use per-directory state files
+            dry_run,
+            verify_lossless_exact,
+            ignore_compression_ratio,
+            show_progress=True,
+            progress_callback=progress_callback
+        )
+        
+        # Summary
+        logging.info("=" * 60)
+        logging.info("Compression Summary:")
+        logging.info(f"  Successfully compressed: {results['success_count']}")
+        logging.info(f"  Skipped: {results['skip_count']}")
+        logging.info(f"  Errors: {results['error_count']}")
+        logging.info(f"  Already processed (across all directories): {processed_count}")
+        logging.info(f"  Already skipped (across all directories): {skipped_count}")
+        if results['stop_processing']:
+            logging.warning(f"  Compression stopped early after {results['consecutive_errors']} consecutive errors")
+            logging.warning(f"  Warning file created: {os.path.join(folder, WARNING_FILE)}")
+        logging.info("=" * 60)
+        
+        # Print compression ratio histogram
+        print_compression_ratio_histogram(results.get('compression_ratios', []))
+        
+        return results
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Robust TIFF compression tool for TrueNAS Scale storage servers",
@@ -1188,123 +1362,34 @@ Examples:
     
     args = parser.parse_args()
     
-    # Validate inputs
-    if not os.path.isdir(args.folder):
-        print(f"Error: {args.folder} is not a directory", file=sys.stderr)
-        sys.exit(1)
-    
-    if args.output and not os.path.isdir(os.path.dirname(os.path.abspath(args.output))):
-        print(f"Error: Parent directory of {args.output} does not exist", file=sys.stderr)
-        sys.exit(1)
-    
-    if args.quality < 0 or args.quality > 100:
-        print("Error: Quality must be between 0 and 100", file=sys.stderr)
-        sys.exit(1)
-    
-    # Setup logging
-    setup_logging(log_dir=args.folder)
-    
-    # Calculate threads for tifffile compression
-    if args.threads is None:
-        args.threads = calculate_optimal_threads()
-    
-    # Get available RAM info (fail if detection fails)
     try:
-        available_ram = get_available_ram()
-    except RuntimeError as e:
-        logging.error(f"Failed to detect free RAM: {e}")
+        run_compression(
+            folder=args.folder,
+            compression=args.compression,
+            quality=args.quality,
+            threads=args.threads,
+            output=args.output,
+            dry_run=args.dry_run,
+            cleanup_temp=args.cleanup_temp,
+            cleanup_error_files=args.cleanup_error_files,
+            verify_lossless_exact=args.verify_lossless_exact,
+            ignore_compression_ratio=args.ignore_compression_ratio,
+            force_recompress_skipped=args.force_recompress_skipped,
+            force_recompress_processed=args.force_recompress_processed
+        )
+    except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
-    max_file_size = int(available_ram * RAM_SIZE_LIMIT_RATIO)
-    
-    logging.info("Starting compression (sequential processing)")
-    logging.info(f"Tifffile compression threads: {args.threads}")
-    logging.info(f"Compression: {args.compression}, Quality: {args.quality}")
-    logging.info(f"Free RAM: {available_ram / (1024**3):.2f} GB, Max file size: {max_file_size / (1024**3):.2f} GB (40% of free RAM)")
-    logging.info(f"Folder: {args.folder}")
-    if args.output:
-        logging.info(f"Output folder: {args.output}")
-    if args.dry_run:
-        logging.info("DRY RUN MODE - No files will be modified")
-    if args.verify_lossless_exact:
-        logging.info("BIT-EXACT VERIFICATION MODE - Lossless compressed files will be verified for bit-exact match")
-    if args.force_recompress_skipped:
-        logging.info("FORCE RECOMPRESS SKIPPED MODE - Will recompress all previously skipped files")
-    if args.force_recompress_processed:
-        logging.info("FORCE RECOMPRESS PROCESSED MODE - Will recompress all previously processed files")
-    
-    # Disclaimer about local filesystem requirement
-    logging.info("NOTE: This tool is designed for LOCAL filesystems only. Network filesystems are not supported.")
-    logging.info("NOTE: State files are created per directory. Each directory tracks only its own files.")
-    
-    # Cleanup temp files if requested
-    if args.cleanup_temp:
-        cleaned = cleanup_temp_files(args.folder, cleanup_error_files=args.cleanup_error_files)
-        if cleaned > 0:
-            logging.info(f"Cleaned up {cleaned} temporary files")
-        if args.cleanup_error_files:
-            logging.warning("Cleaned up error-marked files - ensure you've investigated any issues")
-    
-    # Acquire lock
-    lock_file = os.path.join(args.folder, LOCK_FILE)
-    try:
-        with FileLock(lock_file):
-            # Find files to compress
-            logging.info("Scanning for TIFF files...")
-            tiff_files = find_tiff_files(
-                args.folder,
-                force_recompress_skipped=args.force_recompress_skipped,
-                force_recompress_processed=args.force_recompress_processed
-            )
-            total_files = len(tiff_files)
-            processed_count = count_processed_files(args.folder)
-            skipped_count = count_skipped_files(args.folder)
-            
-            logging.info(f"Found {total_files} files to compress ({processed_count} already processed, {skipped_count} already skipped across all directories)")
-            
-            if total_files == 0:
-                logging.info("No files to compress")
-                return
-            
-            # Process files sequentially
-            results = process_tiff_files(
-                tiff_files,
-                args.folder,
-                args.output,
-                args.compression,
-                args.quality,
-                args.threads,
-                None,  # Will use per-directory state files
-                args.dry_run,
-                args.verify_lossless_exact,
-                args.ignore_compression_ratio,
-                show_progress=True
-            )
-            
-            # Summary
-            logging.info("=" * 60)
-            logging.info("Compression Summary:")
-            logging.info(f"  Successfully compressed: {results['success_count']}")
-            logging.info(f"  Skipped: {results['skip_count']}")
-            logging.info(f"  Errors: {results['error_count']}")
-            logging.info(f"  Already processed (across all directories): {processed_count}")
-            logging.info(f"  Already skipped (across all directories): {skipped_count}")
-            if results['stop_processing']:
-                logging.warning(f"  Compression stopped early after {results['consecutive_errors']} consecutive errors")
-                logging.warning(f"  Warning file created: {os.path.join(args.folder, WARNING_FILE)}")
-            logging.info("=" * 60)
-            
-            # Print compression ratio histogram
-            print_compression_ratio_histogram(results.get('compression_ratios', []))
-    
     except RuntimeError as e:
         logging.error(str(e))
+        print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
     except KeyboardInterrupt:
         logging.warning("Interrupted by user")
         sys.exit(130)
     except Exception as e:
         logging.error(f"Fatal error: {e}", exc_info=True)
+        print(f"Fatal error: {e}", file=sys.stderr)
         sys.exit(1)
 
 

@@ -13,3 +13,7 @@ psutil>=5.8.0
 # Required for version checking (pkg_resources)
 setuptools>=65.0.0
 
+# Web server dependencies
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
