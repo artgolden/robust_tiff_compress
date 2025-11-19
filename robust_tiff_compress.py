@@ -117,6 +117,34 @@ class CompressionState:
         with self.lock:
             return len(self.state.get('processed', {}))
 
+    def is_skipped(self, file_path: str) -> bool:
+        """Check if file has been skipped (by filename only, not full path)."""
+        f_path = str(file_path)
+        if not f_path.startswith(self.directory):
+            raise ValueError(f"File path {f_path} is not in directory {self.directory}")
+        with self.lock:
+            return f_path in self.state.get("skipped", {})
+
+    def mark_skipped(self, file_path: str, reason: str, compression_ratio: Optional[float] = None):
+        """Mark file as skipped (by filename only, not full path)."""
+        f_path = str(file_path)
+        if not f_path.startswith(self.directory):
+            raise ValueError(f"File path {f_path} is not in directory {self.directory}")
+        with self.lock:
+            if 'skipped' not in self.state:
+                self.state['skipped'] = {}
+            self.state['skipped'][f_path] = {
+                'reason': reason,
+                'compression_ratio': compression_ratio,
+                'timestamp': datetime.now().isoformat()
+            }
+            self._save()
+
+    def get_skipped_count(self) -> int:
+        """Get count of skipped files."""
+        with self.lock:
+            return len(self.state.get('skipped', {}))
+
 
 class FileLock:
     """Simple file-based lock for preventing concurrent runs."""
@@ -515,6 +543,12 @@ def compress_tiff_file(
         compression_ratio = float(original_size) / compressed_size
         if not ignore_compression_ratio and compression_ratio < COMPRESSION_RATIO_THRESHOLD:
             os.remove(temp_path)
+            # Mark file as skipped in state file
+            state.mark_skipped(
+                file_path,
+                f"compression ratio {compression_ratio:.2f} < {COMPRESSION_RATIO_THRESHOLD}",
+                compression_ratio
+            )
             return True, f"Skipped (compression ratio {compression_ratio:.2f} < {COMPRESSION_RATIO_THRESHOLD})", None
 
         # Verify compressed file can be read
@@ -650,12 +684,33 @@ def count_processed_files(root_dir: str) -> int:
     return total_processed
 
 
-def find_tiff_files(root_dir: str) -> List[str]:
+def count_skipped_files(root_dir: str) -> int:
+    """Count total number of skipped files across all directories."""
+    total_skipped = 0
+    for root, dirs, files in os.walk(root_dir):
+        # Skip hidden directories
+        dirs[:] = [d for d in dirs if not d.startswith('.')]
+        
+        state_file = get_state_file_for_directory(root)
+        if os.path.exists(state_file):
+            state = CompressionState(state_file)
+            total_skipped += state.get_skipped_count()
+    
+    return total_skipped
+
+
+def find_tiff_files(root_dir: str, force_recompress_skipped: bool = False, 
+                    force_recompress_processed: bool = False) -> List[str]:
     """Find all TIFF files that need compression.
     
     Processes directories one at a time, checking for state file in each directory.
     Only files in the same directory as the state file are tracked by that state file.
     Skips hidden directories and directories named as STATE_FILE.
+    
+    Args:
+        root_dir: Root directory to search for TIFF files
+        force_recompress_skipped: If True, include files that were previously skipped
+        force_recompress_processed: If True, include files that were previously processed
     """
     tiff_files = []
     processed_dirs = set()  # Track directories we've already processed
@@ -683,8 +738,24 @@ def find_tiff_files(root_dir: str) -> List[str]:
                 continue
             if file.lower().endswith(('.tif', '.tiff')):
                 file_path = os.path.join(root, file)
-                # Check if already processed (using filename only)
-                if not state.is_processed(file_path):
+                # Check if already processed
+                is_processed = state.is_processed(file_path)
+                # Check if skipped
+                is_skipped = state.is_skipped(file_path)
+                
+                # Include file if:
+                # - Not processed and not skipped (normal case)
+                # - Skipped but force_recompress_skipped is True
+                # - Processed but force_recompress_processed is True
+                should_include = False
+                if not is_processed and not is_skipped:
+                    should_include = True
+                elif is_skipped and force_recompress_skipped:
+                    should_include = True
+                elif is_processed and force_recompress_processed:
+                    should_include = True
+                
+                if should_include:
                     tiff_files.append(file_path)
 
         processed_dirs.add(root)
@@ -1101,6 +1172,20 @@ Examples:
              'Useful for testing or when you want to compress files regardless of ratio.'
     )
     
+    parser.add_argument(
+        '--force-recompress-skipped',
+        action='store_true',
+        help='Force recompression of all previously skipped files that are recorded in STATE_FILE. '
+             'Files are skipped when compression ratio is too small or other skip conditions are met.'
+    )
+    
+    parser.add_argument(
+        '--force-recompress-processed',
+        action='store_true',
+        help='Force recompression of all previously processed files that are recorded in STATE_FILE. '
+             'This will recompress files that were successfully compressed in previous runs.'
+    )
+    
     args = parser.parse_args()
     
     # Validate inputs
@@ -1143,6 +1228,10 @@ Examples:
         logging.info("DRY RUN MODE - No files will be modified")
     if args.verify_lossless_exact:
         logging.info("BIT-EXACT VERIFICATION MODE - Lossless compressed files will be verified for bit-exact match")
+    if args.force_recompress_skipped:
+        logging.info("FORCE RECOMPRESS SKIPPED MODE - Will recompress all previously skipped files")
+    if args.force_recompress_processed:
+        logging.info("FORCE RECOMPRESS PROCESSED MODE - Will recompress all previously processed files")
     
     # Disclaimer about local filesystem requirement
     logging.info("NOTE: This tool is designed for LOCAL filesystems only. Network filesystems are not supported.")
@@ -1162,11 +1251,16 @@ Examples:
         with FileLock(lock_file):
             # Find files to compress
             logging.info("Scanning for TIFF files...")
-            tiff_files = find_tiff_files(args.folder)
+            tiff_files = find_tiff_files(
+                args.folder,
+                force_recompress_skipped=args.force_recompress_skipped,
+                force_recompress_processed=args.force_recompress_processed
+            )
             total_files = len(tiff_files)
             processed_count = count_processed_files(args.folder)
+            skipped_count = count_skipped_files(args.folder)
             
-            logging.info(f"Found {total_files} files to compress ({processed_count} already processed across all directories)")
+            logging.info(f"Found {total_files} files to compress ({processed_count} already processed, {skipped_count} already skipped across all directories)")
             
             if total_files == 0:
                 logging.info("No files to compress")
@@ -1194,6 +1288,7 @@ Examples:
             logging.info(f"  Skipped: {results['skip_count']}")
             logging.info(f"  Errors: {results['error_count']}")
             logging.info(f"  Already processed (across all directories): {processed_count}")
+            logging.info(f"  Already skipped (across all directories): {skipped_count}")
             if results['stop_processing']:
                 logging.warning(f"  Compression stopped early after {results['consecutive_errors']} consecutive errors")
                 logging.warning(f"  Warning file created: {os.path.join(args.folder, WARNING_FILE)}")

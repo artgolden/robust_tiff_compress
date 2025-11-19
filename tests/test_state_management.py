@@ -268,3 +268,159 @@ class TestStateThreadSafety:
         assert state.get_processed_count() == 10
         for i in range(10):
             assert state.is_processed(os.path.join(state.directory, f"file{i}.tif"))
+
+
+class TestSkippedFileTracking:
+    """Test tracking and handling of skipped files."""
+
+    def test_mark_skipped(self, state_file):
+        """Test marking files as skipped."""
+        state = CompressionState(str(state_file))
+
+        dir_path = os.path.dirname(str(state_file))
+        file_path = os.path.join(dir_path, "file.tif")
+        reason = "compression ratio 1.2 < 1.43"
+        compression_ratio = 1.2
+
+        state.mark_skipped(file_path, reason, compression_ratio)
+
+        assert state.is_skipped(file_path)
+
+        # Verify state file contains correct data
+        with open(state_file, 'r') as f:
+            data = json.load(f)
+            assert "skipped" in data
+            assert file_path in data["skipped"]
+            file_data = data["skipped"][file_path]
+            assert file_data["reason"] == reason
+            assert file_data["compression_ratio"] == compression_ratio
+            assert "timestamp" in file_data
+
+    def test_is_skipped(self, state_file):
+        """Test checking if file is skipped."""
+        state = CompressionState(str(state_file))
+
+        dir_path = os.path.dirname(str(state_file))
+        file_path = os.path.join(dir_path, "file.tif")
+        assert not state.is_skipped(file_path)
+
+        state.mark_skipped(file_path, "test reason", 1.2)
+        assert state.is_skipped(file_path)
+
+    def test_get_skipped_count(self, state_file):
+        """Test getting count of skipped files."""
+        state = CompressionState(str(state_file))
+
+        dir_path = os.path.dirname(str(state_file))
+
+        assert state.get_skipped_count() == 0
+
+        file1_path = os.path.join(dir_path, "file1.tif")
+        file2_path = os.path.join(dir_path, "file2.tif")
+        state.mark_skipped(file1_path, "reason1", 1.1)
+        assert state.get_skipped_count() == 1
+
+        state.mark_skipped(file2_path, "reason2", 1.3)
+        assert state.get_skipped_count() == 2
+
+    def test_skip_previously_skipped_file(
+        self, tiff_file_not_compressible, state_file, mock_ram_large, mock_disk_space_sufficient
+    ):
+        """Test that files skipped due to compression ratio are tracked and skipped on subsequent runs."""
+        from robust_tiff_compress import compress_tiff_file, get_state_file_for_directory, find_tiff_files
+
+        # Get state file for the directory containing the file
+        file_dir = str(tiff_file_not_compressible.parent)
+        state_file_path = get_state_file_for_directory(file_dir)
+        state = CompressionState(state_file_path)
+
+        # First attempt: file should be skipped due to low compression ratio
+        success, message, compression_ratio = compress_tiff_file(
+            str(tiff_file_not_compressible),
+            None,
+            "zlib",
+            85,
+            None,
+            state,  # Will use per-directory state
+            dry_run=False
+        )
+
+        # Should succeed but skip due to low compression ratio
+        assert success
+        assert "Skipped" in message
+        assert "compression ratio" in message.lower() or "ratio" in message.lower()
+
+        # Verify file is marked as skipped in state
+        assert state.is_skipped(str(tiff_file_not_compressible))
+
+        # Second attempt: file should be skipped by find_tiff_files (not included in list)
+        tiff_files = find_tiff_files(file_dir)
+        assert str(tiff_file_not_compressible) not in tiff_files, \
+            "Previously skipped file should not be included in find_tiff_files"
+
+
+    def test_force_recompress_skipped_files(
+        self, tmp_test_dir, mock_ram_large, mock_disk_space_sufficient
+    ):
+        """Test that --force-recompress-skipped includes previously skipped files."""
+        from robust_tiff_compress import (
+            find_tiff_files, get_state_file_for_directory, CompressionState
+        )
+        from tests.conftest import create_test_tiff
+        import numpy as np
+
+        # Create test files
+        file1 = tmp_test_dir / "file1.tif"
+        file2 = tmp_test_dir / "file2.tif"
+
+        # Create test TIFF files
+        create_test_tiff(file1, size_bytes=3 * 1024 * 1024, dtype=np.uint16)
+        create_test_tiff(file2, size_bytes=3 * 1024 * 1024, dtype=np.uint16)
+
+        # Get state file and mark file1 as skipped
+        state_file_path = get_state_file_for_directory(str(tmp_test_dir))
+        state = CompressionState(state_file_path)
+        state.mark_skipped(str(file1), "compression ratio 1.2 < 1.43", 1.2)
+
+        # Without force flag: file1 should be skipped
+        tiff_files = find_tiff_files(str(tmp_test_dir), force_recompress_skipped=False)
+        assert str(file1) not in tiff_files, "file1 should be skipped without force flag"
+        assert str(file2) in tiff_files, "file2 should be included"
+
+        # With force flag: file1 should be included
+        tiff_files = find_tiff_files(str(tmp_test_dir), force_recompress_skipped=True)
+        assert str(file1) in tiff_files, "file1 should be included with force flag"
+        assert str(file2) in tiff_files, "file2 should still be included"
+
+    def test_force_recompress_processed_files(
+        self, tmp_test_dir, mock_ram_large, mock_disk_space_sufficient
+    ):
+        """Test that --force-recompress-processed includes previously processed files."""
+        from robust_tiff_compress import (
+            find_tiff_files, get_state_file_for_directory, CompressionState
+        )
+        from tests.conftest import create_test_tiff
+        import numpy as np
+
+        # Create test files
+        file1 = tmp_test_dir / "file1.tif"
+        file2 = tmp_test_dir / "file2.tif"
+
+        # Create test TIFF files
+        create_test_tiff(file1, size_bytes=3 * 1024 * 1024, dtype=np.uint16)
+        create_test_tiff(file2, size_bytes=3 * 1024 * 1024, dtype=np.uint16)
+
+        # Get state file and mark file1 as processed
+        state_file_path = get_state_file_for_directory(str(tmp_test_dir))
+        state = CompressionState(state_file_path)
+        state.mark_processed(str(file1), 2.5, "zlib", 1000000, 400000)
+
+        # Without force flag: file1 should be skipped
+        tiff_files = find_tiff_files(str(tmp_test_dir), force_recompress_processed=False)
+        assert str(file1) not in tiff_files, "file1 should be skipped without force flag"
+        assert str(file2) in tiff_files, "file2 should be included"
+
+        # With force flag: file1 should be included
+        tiff_files = find_tiff_files(str(tmp_test_dir), force_recompress_processed=True)
+        assert str(file1) in tiff_files, "file1 should be included with force flag"
+        assert str(file2) in tiff_files, "file2 should still be included"
