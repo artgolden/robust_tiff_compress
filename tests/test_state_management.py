@@ -152,7 +152,7 @@ class TestResumeFunctionality:
         )
         
         # Try to compress again
-        success, message = compress_tiff_file(
+        success, message, compression_ratio = compress_tiff_file(
             str(medium_tiff_file),
             None,
             "zlib",

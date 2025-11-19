@@ -30,7 +30,7 @@ class TestDiskSpaceFailures:
         """Test error handling when disk space is insufficient for in-place compression."""
         state = CompressionState(str(state_file))
         
-        success, message = compress_tiff_file(
+        success, message, compression_ratio = compress_tiff_file(
             str(medium_tiff_file),
             None,
             "zlib",
@@ -50,7 +50,7 @@ class TestDiskSpaceFailures:
         state = CompressionState(str(state_file))
         output_path = output_dir / medium_tiff_file.name
         
-        success, message = compress_tiff_file(
+        success, message, compression_ratio = compress_tiff_file(
             str(medium_tiff_file),
             str(output_path),
             "zlib",
@@ -76,7 +76,7 @@ class TestFilePermissionFailures:
         # Try to compress read-only file
         # Note: On some systems, read-only files can still be read
         # The actual error might occur during write operations
-        success, message = compress_tiff_file(
+        success, message, compression_ratio = compress_tiff_file(
             str(read_only_file),
             None,
             "zlib",
@@ -97,7 +97,7 @@ class TestFilePermissionFailures:
         state = CompressionState(str(state_file))
         output_path = read_only_dir / medium_tiff_file.name
         
-        success, message = compress_tiff_file(
+        success, message, compression_ratio = compress_tiff_file(
             str(medium_tiff_file),
             str(output_path),
             "zlib",
@@ -120,7 +120,7 @@ class TestCorruptedFileHandling:
         """Test handling of invalid TIFF file."""
         state = CompressionState(str(state_file))
         
-        success, message = compress_tiff_file(
+        success, message, compression_ratio = compress_tiff_file(
             str(corrupted_tiff_file),
             None,
             "zlib",
@@ -139,7 +139,7 @@ class TestCorruptedFileHandling:
         """Test handling of empty TIFF file."""
         state = CompressionState(str(state_file))
         
-        success, message = compress_tiff_file(
+        success, message, compression_ratio = compress_tiff_file(
             str(empty_tiff_file),
             None,
             "zlib",
@@ -158,7 +158,7 @@ class TestCorruptedFileHandling:
         """Test handling of truncated TIFF file."""
         state = CompressionState(str(state_file))
         
-        success, message = compress_tiff_file(
+        success, message, compression_ratio = compress_tiff_file(
             str(truncated_tiff_file),
             None,
             "zlib",
@@ -190,7 +190,7 @@ class TestCorruptedFileHandling:
                 return original_verify(file_path)
         
         with patch('robust_tiff_compress.verify_tiff_file', side_effect=mock_verify):
-            success, message = compress_tiff_file(
+            success, message, compression_ratio = compress_tiff_file(
                 str(medium_tiff_file),
                 None,
                 "zlib",
@@ -223,7 +223,7 @@ class TestCorruptedFileHandling:
                 return original_verify(file_path)
         
         with patch('robust_tiff_compress.verify_tiff_file', side_effect=mock_verify):
-            success, message = compress_tiff_file(
+            success, message, compression_ratio = compress_tiff_file(
                 str(medium_tiff_file),
                 None,
                 "zlib",
@@ -247,7 +247,7 @@ class TestCompressionFailures:
         """Test skipping files that don't meet compression ratio threshold."""
         state = CompressionState(str(state_file))
         
-        success, message = compress_tiff_file(
+        success, message, compression_ratio = compress_tiff_file(
             str(tiff_file_not_compressible),
             None,
             "zlib",
@@ -272,7 +272,7 @@ class TestCompressionFailures:
         with patch('tifffile.TiffWriter') as mock_writer:
             mock_writer.side_effect = Exception("Compression failed")
             
-            success, message = compress_tiff_file(
+            success, message, compression_ratio = compress_tiff_file(
                 str(medium_tiff_file),
                 None,
                 "zlib",
@@ -300,7 +300,7 @@ class TestCompressionFailures:
             return original_open(path, mode, *args, **kwargs)
         
         with patch('builtins.open', side_effect=mock_open_fail):
-            success, message = compress_tiff_file(
+            success, message, compression_ratio = compress_tiff_file(
                 str(medium_tiff_file),
                 None,
                 "zlib",
@@ -328,7 +328,7 @@ class TestCompressionFailures:
             return original_getsize(path)
         
         with patch('os.path.getsize', side_effect=mock_getsize):
-            success, message = compress_tiff_file(
+            success, message, compression_ratio = compress_tiff_file(
                 str(medium_tiff_file),
                 None,
                 "zlib",
@@ -358,7 +358,7 @@ class TestFileOperationFailures:
         
         # Mock shutil.move to raise OSError
         with patch('shutil.move', side_effect=OSError("Move failed")):
-            success, message = compress_tiff_file(
+            success, message, compression_ratio = compress_tiff_file(
                 str(medium_tiff_file),
                 None,
                 "zlib",
@@ -398,7 +398,7 @@ class TestConsecutiveErrorHandling:
         
         # Mock compress_tiff_file to fail
         def mock_compress(*args, **kwargs):
-            return False, "Test error"
+            return False, "Test error", None
         
         tiff_files = find_tiff_files(str(root_dir), state)
         # Need at least MAX_CONSECUTIVE_ERRORS files to test
@@ -488,7 +488,7 @@ class TestTempFileErrorMarking:
             raise Exception("Compression failed")
         
         with patch('tifffile.TiffWriter', side_effect=mock_write_fail):
-            success, message = compress_tiff_file(
+            success, message, compression_ratio = compress_tiff_file(
                 str(medium_tiff_file),
                 None,
                 "zlib",

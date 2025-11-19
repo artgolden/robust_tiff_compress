@@ -26,7 +26,7 @@ class TestBasicCompression:
         state = CompressionState(str(state_file))
         original_size = os.path.getsize(medium_tiff_file)
         
-        success, message = compress_tiff_file(
+        success, message, compression_ratio = compress_tiff_file(
             str(medium_tiff_file),
             None,
             compression,
@@ -54,7 +54,7 @@ class TestBasicCompression:
         original_size = os.path.getsize(medium_tiff_file)
         output_path = output_dir / medium_tiff_file.name
         
-        success, message = compress_tiff_file(
+        success, message, compression_ratio = compress_tiff_file(
             str(medium_tiff_file),
             str(output_path),
             compression,
@@ -82,7 +82,7 @@ class TestBasicCompression:
         # Read original array
         original_array = tifffile.imread(str(tiff_file_uint16))
         
-        success, message = compress_tiff_file(
+        success, message, compression_ratio = compress_tiff_file(
             str(tiff_file_uint16),
             None,
             "zlib",
@@ -116,7 +116,7 @@ class TestBasicCompression:
         original_shape = original_array.shape
         original_dtype = original_array.dtype
         
-        success, message = compress_tiff_file(
+        success, message, compression_ratio = compress_tiff_file(
             str(tiff_file_uint16),
             None,
             "jpeg_2000_lossy",
@@ -144,7 +144,7 @@ class TestBasicCompression:
         state = CompressionState(str(state_file))
         original_size = os.path.getsize(tiff_file_compressible)
         
-        success, message = compress_tiff_file(
+        success, message, compression_ratio = compress_tiff_file(
             str(tiff_file_compressible),
             None,
             "zlib",
@@ -171,7 +171,7 @@ class TestFileSizeHandling:
         original_size = os.path.getsize(small_tiff_file)
         assert original_size < MIN_FILE_SIZE
         
-        success, message = compress_tiff_file(
+        success, message, compression_ratio = compress_tiff_file(
             str(small_tiff_file),
             None,
             "zlib",
@@ -196,7 +196,7 @@ class TestFileSizeHandling:
         max_file_size = int(1024 * 1024 * 1024 * 0.20)  # 20% of 1GB
         exceeds_ram = original_size > max_file_size
         
-        success, message = compress_tiff_file(
+        success, message, compression_ratio = compress_tiff_file(
             str(very_large_tiff_file),
             None,
             "zlib",
@@ -221,7 +221,7 @@ class TestFileSizeHandling:
         original_size = os.path.getsize(medium_tiff_file)
         assert original_size >= MIN_FILE_SIZE
         
-        success, message = compress_tiff_file(
+        success, message, compression_ratio = compress_tiff_file(
             str(medium_tiff_file),
             None,
             "zlib",
@@ -246,7 +246,7 @@ class TestNestedDirectories:
         state = CompressionState(str(state_file))
         
         for tiff_file in sample_tiff_files:
-            success, message = compress_tiff_file(
+            success, message, compression_ratio = compress_tiff_file(
                 str(tiff_file),
                 None,
                 "zlib",
@@ -270,7 +270,7 @@ class TestNestedDirectories:
             rel_path = tiff_file.relative_to(root_dir)
             output_path = output_dir / rel_path
             
-            success, message = compress_tiff_file(
+            success, message, compression_ratio = compress_tiff_file(
                 str(tiff_file),
                 str(output_path),
                 "zlib",
@@ -304,7 +304,7 @@ class TestDataIntegrity:
         original_dtype = original_array.dtype
         
         state = CompressionState(str(state_file))
-        success, message = compress_tiff_file(
+        success, message, compression_ratio = compress_tiff_file(
             str(tiff_file),
             None,
             "zlib",
@@ -328,7 +328,7 @@ class TestDataIntegrity:
         original_shape = original_array.shape
         
         state = CompressionState(str(state_file))
-        success, message = compress_tiff_file(
+        success, message, compression_ratio = compress_tiff_file(
             str(tiff_file_3d),
             None,
             "zlib",
@@ -350,7 +350,7 @@ class TestDataIntegrity:
         """Test that compressed files can be read back successfully."""
         state = CompressionState(str(state_file))
         
-        success, message = compress_tiff_file(
+        success, message, compression_ratio = compress_tiff_file(
             str(medium_tiff_file),
             None,
             "zlib",
@@ -380,7 +380,7 @@ class TestDryRun:
         original_size = os.path.getsize(medium_tiff_file)
         original_mtime = os.path.getmtime(medium_tiff_file)
         
-        success, message = compress_tiff_file(
+        success, message, compression_ratio = compress_tiff_file(
             str(medium_tiff_file),
             None,
             "zlib",
@@ -404,7 +404,7 @@ class TestDryRun:
         state = CompressionState(str(state_file))
         output_path = output_dir / medium_tiff_file.name
         
-        success, message = compress_tiff_file(
+        success, message, compression_ratio = compress_tiff_file(
             str(medium_tiff_file),
             str(output_path),
             "zlib",

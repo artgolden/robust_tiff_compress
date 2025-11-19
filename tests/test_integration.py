@@ -38,7 +38,7 @@ class TestFullWorkflow:
         tiff_files = find_tiff_files(str(root_dir), state)
         
         for file_path in tiff_files:
-            success, message = compress_tiff_file(
+            success, message, compression_ratio = compress_tiff_file(
                 str(file_path),
                 None,
                 "zlib",
@@ -78,7 +78,7 @@ class TestFullWorkflow:
         tiff_files = find_tiff_files(str(root_dir), state)
         
         for file_path in tiff_files:
-            success, message = compress_tiff_file(
+            success, message, compression_ratio = compress_tiff_file(
                 str(file_path),
                 None,
                 "zlib",
@@ -132,7 +132,7 @@ class TestFullWorkflow:
         files_to_process = tiff_files[:2]
         
         for file_path in files_to_process:
-            success, message = compress_tiff_file(
+            success, message, compression_ratio = compress_tiff_file(
                 str(file_path),
                 None,
                 "zlib",
@@ -242,7 +242,7 @@ class TestRealWorldScenarios:
         # Process all files
         success_count = 0
         for file_path in tiff_files:
-            success, message = compress_tiff_file(
+            success, message, compression_ratio = compress_tiff_file(
                 str(file_path),
                 None,
                 "zlib",
@@ -316,7 +316,7 @@ class TestRealWorldScenarios:
         
         # Process first file
         if tiff_files1:
-            success, message = compress_tiff_file(
+            success, message, compression_ratio = compress_tiff_file(
                 str(tiff_files1[0]),
                 None,
                 "zlib",
@@ -404,7 +404,7 @@ class TestOutputDirectoryIntegration:
             rel_path = tiff_file.relative_to(root_dir)
             output_path = output_dir / rel_path
             
-            success, message = compress_tiff_file(
+            success, message, compression_ratio = compress_tiff_file(
                 str(tiff_file),
                 str(output_path),
                 "zlib",

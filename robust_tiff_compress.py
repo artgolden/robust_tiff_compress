@@ -365,21 +365,22 @@ def compress_tiff_file(
     dry_run: bool = False,
     verify_lossless_exact: bool = False,
     ignore_compression_ratio: bool = False
-) -> Tuple[bool, Optional[str]]:
+) -> Tuple[bool, Optional[str], Optional[float]]:
     """
     Compress a single TIFF file.
     
     Returns:
-        (success, error_message)
+        (success, error_message, compression_ratio)
+        compression_ratio is None if skipped or error, otherwise the ratio value
     """
     try:
         # Check file size
         original_size = os.path.getsize(file_path)
         if original_size < MIN_FILE_SIZE:
-            return True, f"Skipped (file size {original_size} < {MIN_FILE_SIZE} bytes)"
+            return True, f"Skipped (file size {original_size} < {MIN_FILE_SIZE} bytes)", None
 
         if dry_run:
-            return True, "Dry run - would compress"
+            return True, "Dry run - would compress", None
 
         # Check RAM size limit
         available_ram = get_available_ram()
@@ -390,12 +391,12 @@ def compress_tiff_file(
                 f"exceeds 20% of available RAM ({available_ram / (1024**3):.2f} GB, "
                 f"limit: {max_file_size / (1024**3):.2f} GB)"
             )
-            return True, f"Skipped (file size {original_size / (1024**2):.1f} MB > {max_file_size / (1024**2):.1f} MB, 20% of RAM)"
+            return True, f"Skipped (file size {original_size / (1024**2):.1f} MB > {max_file_size / (1024**2):.1f} MB, 20% of RAM)", None
 
         # Verify file can be read
         can_read, array = verify_tiff_file(file_path)
         if not can_read:
-            return False, "Could not read file as valid TIFF/numpy array"
+            return False, "Could not read file as valid TIFF/numpy array", None
 
 
         # Determine output path
@@ -405,7 +406,7 @@ def compress_tiff_file(
             os.makedirs(output_dir, exist_ok=True)
             # Verify write permissions
             if not os.access(output_dir, os.W_OK):
-                return False, f"Output directory is not writable: {output_dir}"
+                return False, f"Output directory is not writable: {output_dir}", None
             final_path = output_path
             temp_path = output_path + TEMP_SUFFIX
         else:
@@ -428,7 +429,7 @@ def compress_tiff_file(
             return False, (
                 f"Insufficient disk space: need {required_space / (1024**2):.1f} MB, "
                 f"available {available / (1024**2):.1f} MB"
-            )
+            ), None
 
         # Compress to temporary file
         tifffile_version = pkg_resources.get_distribution("tifffile").version
@@ -456,10 +457,10 @@ def compress_tiff_file(
                     )
         except Exception as e:
             rename_temp_file_on_error(temp_path, file_path, f"Compression failed: {e}")
-            return False, f"Compression failed: {e}"
+            return False, f"Compression failed: {e}", None
 
         if not os.path.exists(temp_path):
-            return False, "Compressed file was not created"
+            return False, "Compressed file was not created", None
 
         # Ensure temp file is fully written before moving (critical for HDD RAID)
         try:
@@ -471,32 +472,33 @@ def compress_tiff_file(
             return (
                 False,
                 "Compressed file verification failed - could not fsync temp file",
+                None
             )
 
         compressed_size = os.path.getsize(temp_path)
         if compressed_size == 0:
             rename_temp_file_on_error(temp_path, file_path, "Compressed file is empty")
-            return False, "Compressed file is empty"
+            return False, "Compressed file is empty", None
 
         # Check compression ratio
         compression_ratio = float(original_size) / compressed_size
         if not ignore_compression_ratio and compression_ratio < COMPRESSION_RATIO_THRESHOLD:
             os.remove(temp_path)
-            return True, f"Skipped (compression ratio {compression_ratio:.2f} < {COMPRESSION_RATIO_THRESHOLD})"
+            return True, f"Skipped (compression ratio {compression_ratio:.2f} < {COMPRESSION_RATIO_THRESHOLD})", None
 
         # Verify compressed file can be read
         can_read_compressed, compressed_array = verify_tiff_file(temp_path)
         if not can_read_compressed:
             rename_temp_file_on_error(temp_path, file_path, "Compressed file verification failed - could not read")
-            return False, "Compressed file verification failed - could not read"
+            return False, "Compressed file verification failed - could not read", None
 
         # Always compare array size and type (basic sanity check)
         if array.dtype != compressed_array.dtype:
             rename_temp_file_on_error(temp_path, file_path, f"Array dtype mismatch: original {array.dtype} vs compressed {compressed_array.dtype}")
-            return False, f"Array dtype mismatch: original {array.dtype} vs compressed {compressed_array.dtype}"
+            return False, f"Array dtype mismatch: original {array.dtype} vs compressed {compressed_array.dtype}", None
         if array.shape != compressed_array.shape:
             rename_temp_file_on_error(temp_path, file_path, f"Array shape mismatch: original {array.shape} vs compressed {compressed_array.shape}")
-            return False, f"Array shape mismatch: original {array.shape} vs compressed {compressed_array.shape}"
+            return False, f"Array shape mismatch: original {array.shape} vs compressed {compressed_array.shape}", None
 
         # Optional: Bit-exact verification for lossless compression only
         if verify_lossless_exact:
@@ -507,7 +509,7 @@ def compress_tiff_file(
                 # For lossless compression, verify bit-exactness
                 if not arrays_equal_exact(array, compressed_array):
                     rename_temp_file_on_error(temp_path, file_path, "Compressed file verification failed - bit-exact mismatch (lossless compression)")
-                    return False, "Compressed file verification failed - bit-exact mismatch (lossless compression)"
+                    return False, "Compressed file verification failed - bit-exact mismatch (lossless compression)", None
 
         # Atomic move: replace original with compressed
         # Only move if temp file is verified and complete
@@ -516,10 +518,10 @@ def compress_tiff_file(
             # Verify original file still exists and has correct size before attempting move
             if not os.path.exists(file_path):
                 rename_temp_file_on_error(temp_path, file_path, "Original file disappeared before move")
-                return False, "Original file disappeared before move - aborting to preserve data"
+                return False, "Original file disappeared before move - aborting to preserve data", None
             if os.path.getsize(file_path) != original_size:
                 rename_temp_file_on_error(temp_path, file_path, f"Original file size changed before move (expected {original_size}, got {os.path.getsize(file_path)})")
-                return False, "Original file size changed before move - aborting to preserve data"
+                return False, "Original file size changed before move - aborting to preserve data", None
         
         try:
             if output_path:
@@ -538,15 +540,15 @@ def compress_tiff_file(
                         # Move failed - original file is still there, temp file still exists
                         # This is actually fine - the original is preserved
                         rename_temp_file_on_error(temp_path, file_path, "File size mismatch after move - move appears to have failed")
-                        return False, "File size mismatch after move - original preserved (move failed)"
+                        return False, "File size mismatch after move - original preserved (move failed)", None
                     else:
                         # Move succeeded but file has wrong size - this is bad
                         # Original is gone, compressed file is corrupted - save backup from array
                         backup_path = save_backup_from_array(array, file_path)
                         if backup_path:
-                            return False, f"File size mismatch after move - expected {compressed_size}, got {final_file_size} (original may be corrupted, backup saved to {backup_path})"
+                            return False, f"File size mismatch after move - expected {compressed_size}, got {final_file_size} (original may be corrupted, backup saved to {backup_path})", None
                         else:
-                            return False, f"File size mismatch after move - expected {compressed_size}, got {final_file_size} (original may be corrupted, backup save failed)"
+                            return False, f"File size mismatch after move - expected {compressed_size}, got {final_file_size} (original may be corrupted, backup save failed)", None
 
         except OSError as e:
             # Verify original file is still intact after failed move
@@ -555,29 +557,29 @@ def compress_tiff_file(
                     if os.path.getsize(file_path) == original_size:
                         # Original is intact, good
                         rename_temp_file_on_error(temp_path, file_path, f"OSError during file move: {e}")
-                        return False, f"Failed to move compressed file: {e} (original file preserved)"
+                        return False, f"Failed to move compressed file: {e} (original file preserved)", None
                     else:
                         # Original size changed, this is bad - save backup from array
                         backup_path = save_backup_from_array(array, file_path)
                         if backup_path:
                             rename_temp_file_on_error(temp_path, file_path, f"OSError during file move: {e} - original file size changed (backup saved to {backup_path})")
-                            return False, f"Failed to move compressed file: {e} - original file may be corrupted (backup saved to {backup_path})"
+                            return False, f"Failed to move compressed file: {e} - original file may be corrupted (backup saved to {backup_path})", None
                         else:
                             rename_temp_file_on_error(temp_path, file_path, f"OSError during file move: {e} - original file size changed (backup save failed)")
-                            return False, f"Failed to move compressed file: {e} - original file may be corrupted (backup save failed)"
+                            return False, f"Failed to move compressed file: {e} - original file may be corrupted (backup save failed)", None
                 else:
                     # Original disappeared, this is very bad - save backup from array
                     backup_path = save_backup_from_array(array, file_path)
                     if backup_path:
                         rename_temp_file_on_error(temp_path, file_path, f"OSError during file move: {e} - original file disappeared (backup saved to {backup_path})")
-                        return False, f"Failed to move compressed file: {e} - original file disappeared (backup saved to {backup_path})"
+                        return False, f"Failed to move compressed file: {e} - original file disappeared (backup saved to {backup_path})", None
                     else:
                         rename_temp_file_on_error(temp_path, file_path, f"OSError during file move: {e} - original file disappeared (backup save failed)")
-                        return False, f"Failed to move compressed file: {e} - original file disappeared (backup save failed)"
+                        return False, f"Failed to move compressed file: {e} - original file disappeared (backup save failed)", None
             else:
                 # For output path, just report the error
                 rename_temp_file_on_error(temp_path, file_path, f"OSError during file move: {e}")
-                return False, f"Failed to move compressed file: {e}"
+                return False, f"Failed to move compressed file: {e}", None
 
         # Record success
         state.mark_processed(
@@ -588,14 +590,14 @@ def compress_tiff_file(
             compressed_size
         )
 
-        return True, f"Compressed (ratio: {compression_ratio:.2f}x, {original_size} -> {compressed_size} bytes)"
+        return True, f"Compressed (ratio: {compression_ratio:.2f}x, {original_size} -> {compressed_size} bytes)", compression_ratio
 
     except Exception as e:
         logging.error(f"Unexpected error compressing {file_path}: {e}", exc_info=True)
         # Rename temp file if it exists
         temp_path = (output_path if output_path else file_path) + TEMP_SUFFIX
         rename_temp_file_on_error(temp_path, file_path, f"Unexpected error: {e}")
-        return False, f"Unexpected error: {e}"
+        return False, f"Unexpected error: {e}", None
 
 
 def find_tiff_files(root_dir: str, state: CompressionState) -> List[str]:
@@ -720,7 +722,8 @@ def process_tiff_files(
         show_progress: Whether to show progress bar
     
     Returns:
-        Dictionary with keys: success_count, skip_count, error_count, consecutive_errors
+        Dictionary with keys: success_count, skip_count, error_count, consecutive_errors, compression_ratios
+        compression_ratios is a list of compression ratios for successfully compressed files
     """
     success_count = 0
     skip_count = 0
@@ -728,6 +731,7 @@ def process_tiff_files(
     consecutive_errors = 0
     last_errors = []  # Track last errors for warning file
     stop_processing = False
+    compression_ratios = []  # Track compression ratios for successfully compressed files
     
     total_files = len(tiff_files)
     
@@ -748,7 +752,7 @@ def process_tiff_files(
                 output_path = os.path.join(output, rel_path)
             
             try:
-                success, message = compress_tiff_file(
+                success, message, compression_ratio = compress_tiff_file(
                     file_path,
                     output_path,
                     compression,
@@ -768,6 +772,9 @@ def process_tiff_files(
                         skip_count += 1
                     else:
                         success_count += 1
+                        # Collect compression ratio if available
+                        if compression_ratio is not None:
+                            compression_ratios.append(compression_ratio)
                 else:
                     # Track consecutive errors
                     error_count += 1
@@ -827,8 +834,77 @@ def process_tiff_files(
         'skip_count': skip_count,
         'error_count': error_count,
         'consecutive_errors': consecutive_errors,
-        'stop_processing': stop_processing
+        'stop_processing': stop_processing,
+        'compression_ratios': compression_ratios
     }
+
+
+def print_compression_ratio_histogram(compression_ratios: List[float]) -> None:
+    """
+    Print and log a histogram of compression ratios.
+    
+    Args:
+        compression_ratios: List of compression ratios for successfully compressed files
+    """
+    if not compression_ratios:
+        logging.info("No compression ratios to display (no files were successfully compressed)")
+        return
+    
+    # Calculate statistics
+    ratios_array = np.array(compression_ratios)
+    min_ratio = float(np.min(ratios_array))
+    max_ratio = float(np.max(ratios_array))
+    mean_ratio = float(np.mean(ratios_array))
+    median_ratio = float(np.median(ratios_array))
+    std_ratio = float(np.std(ratios_array))
+    
+    # Determine histogram bins
+    # Use adaptive binning based on the range
+    num_bins = 20
+    if max_ratio - min_ratio < 0.5:
+        # Very narrow range, use smaller bins
+        num_bins = 10
+    elif max_ratio - min_ratio > 15:
+        # Very wide range, use larger bins
+        num_bins = 30
+    
+    # Create histogram
+    counts, bin_edges = np.histogram(compression_ratios, bins=num_bins)
+    
+    # Find max count for scaling
+    max_count = int(np.max(counts))
+    bar_width = 50  # Maximum width of histogram bars in characters
+    
+    
+    # Log the same information
+    logging.info("=" * 70)
+    logging.info("Compression Ratio Statistics")
+    logging.info("=" * 70)
+    logging.info(f"  Total files compressed: {len(compression_ratios)}")
+    logging.info(f"  Minimum ratio:         {min_ratio:.2f}x")
+    logging.info(f"  Maximum ratio:         {max_ratio:.2f}x")
+    logging.info(f"  Mean ratio:            {mean_ratio:.2f}x")
+    logging.info(f"  Median ratio:          {median_ratio:.2f}x")
+    logging.info(f"  Std deviation:         {std_ratio:.2f}x")
+    logging.info("\nCompression Ratio Distribution:")
+    logging.info("-" * 70)
+    
+    for i in range(len(counts)):
+        count = int(counts[i])
+        if count == 0:
+            continue
+        
+        bin_start = bin_edges[i]
+        bin_end = bin_edges[i + 1]
+        bin_label = f"{bin_start:.2f}-{bin_end:.2f}"
+        
+        bar_length = int((count / max_count) * bar_width) if max_count > 0 else 0
+        bar = "█" * bar_length
+        
+        logging.info(f"  {bin_label:>15} │{bar:<{bar_width}} {count:>5} files")
+    
+    logging.info("-" * 70)
+    logging.info("=" * 70)
 
 
 def create_warning_file(root_dir: str, error_count: int, last_errors: List[Tuple[str, str]]) -> None:
@@ -1049,6 +1125,9 @@ Examples:
                 logging.warning(f"  Compression stopped early after {results['consecutive_errors']} consecutive errors")
                 logging.warning(f"  Warning file created: {os.path.join(args.folder, WARNING_FILE)}")
             logging.info("=" * 60)
+            
+            # Print compression ratio histogram
+            print_compression_ratio_histogram(results.get('compression_ratios', []))
     
     except RuntimeError as e:
         logging.error(str(e))
