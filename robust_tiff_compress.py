@@ -40,7 +40,7 @@ COMPRESSION_RATIO_THRESHOLD = 1.43  # At least 30% reduction (1/1.43 ≈ 0.70, s
 STATE_FILE = "_compression_state.json"
 TEMP_SUFFIX = ".compressing"
 TEMP_ERROR_SUFFIX = ".compressing.ERROR"
-RAM_SIZE_LIMIT_RATIO = 0.20  # Don't compress files >20% of total RAM
+RAM_SIZE_LIMIT_RATIO = 0.40  # Don't compress files >40% of free RAM
 LOCK_FILE = "_compression_lock"
 WARNING_FILE = "_compression_stopped_warning.txt"
 MAX_CONSECUTIVE_ERRORS = 3
@@ -199,26 +199,29 @@ def verify_tiff_file(file_path: str) -> Tuple[bool, Optional[np.ndarray]]:
 
 
 def get_available_ram() -> int:
-    """Get total available RAM in bytes.
+    """Get free/available RAM in bytes.
+    
+    Returns the amount of RAM that is currently free and available for use.
+    On Linux, this includes memory that can be freed by the OS (buffers/cache).
     
     Raises:
         RuntimeError: If RAM detection fails (no fallback to assumed value).
     """
     if PSUTIL_AVAILABLE:
         try:
-            return psutil.virtual_memory().total
+            return psutil.virtual_memory().available
         except Exception as e:
-            raise RuntimeError(f"Failed to detect RAM using psutil: {e}")
+            raise RuntimeError(f"Failed to detect free RAM using psutil: {e}")
     
     # Fallback: read from /proc/meminfo
     try:
         with open('/proc/meminfo', 'r') as f:
             for line in f:
-                if line.startswith('MemTotal:'):
+                if line.startswith('MemAvailable:'):
                     return int(line.split()[1]) * 1024  # Convert from KB to bytes
-        raise RuntimeError("MemTotal not found in /proc/meminfo")
+        raise RuntimeError("MemAvailable not found in /proc/meminfo")
     except Exception as e:
-        raise RuntimeError(f"Failed to detect RAM from /proc/meminfo: {e}")
+        raise RuntimeError(f"Failed to detect free RAM from /proc/meminfo: {e}")
 
 
 def is_process_running(pid: int) -> bool:
@@ -388,10 +391,10 @@ def compress_tiff_file(
         if original_size > max_file_size:
             logging.warning(
                 f"Skipping {file_path}: file size ({original_size / (1024**3):.2f} GB) "
-                f"exceeds 20% of available RAM ({available_ram / (1024**3):.2f} GB, "
+                f"exceeds 40% of free RAM ({available_ram / (1024**3):.2f} GB, "
                 f"limit: {max_file_size / (1024**3):.2f} GB)"
             )
-            return True, f"Skipped (file size {original_size / (1024**2):.1f} MB > {max_file_size / (1024**2):.1f} MB, 20% of RAM)", None
+            return True, f"Skipped (file size {original_size / (1024**2):.1f} MB > {max_file_size / (1024**2):.1f} MB, 40% of free RAM)", None
 
         # Verify file can be read
         can_read, array = verify_tiff_file(file_path)
@@ -1051,7 +1054,7 @@ Examples:
     try:
         available_ram = get_available_ram()
     except RuntimeError as e:
-        logging.error(f"Failed to detect available RAM: {e}")
+        logging.error(f"Failed to detect free RAM: {e}")
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
     max_file_size = int(available_ram * RAM_SIZE_LIMIT_RATIO)
@@ -1059,7 +1062,7 @@ Examples:
     logging.info("Starting compression (sequential processing)")
     logging.info(f"Tifffile compression threads: {args.threads}")
     logging.info(f"Compression: {args.compression}, Quality: {args.quality}")
-    logging.info(f"Available RAM: {available_ram / (1024**3):.2f} GB, Max file size: {max_file_size / (1024**3):.2f} GB (20%)")
+    logging.info(f"Free RAM: {available_ram / (1024**3):.2f} GB, Max file size: {max_file_size / (1024**3):.2f} GB (40% of free RAM)")
     logging.info(f"Folder: {args.folder}")
     if args.output:
         logging.info(f"Output folder: {args.output}")
