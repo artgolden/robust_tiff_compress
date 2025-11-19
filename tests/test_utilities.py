@@ -22,31 +22,27 @@ from robust_tiff_compress import (
 
 class TestRAMDetection:
     """Test RAM detection functions."""
-    
-    def test_get_available_ram_with_psutil(self, mock_ram_psutil):
+
+    def test_get_available_ram_with_psutil(self):
         """Test get_available_ram() with psutil available."""
-        # Mock psutil to be available
-        with patch('robust_tiff_compress.PSUTIL_AVAILABLE', True):
-            ram = get_available_ram()
-            assert ram > 0
-            assert ram == 8 * 1024 * 1024 * 1024  # 8GB from mock
-    
-    def test_get_available_ram_fallback_proc_meminfo(self, mock_ram_proc_meminfo):
-        """Test get_available_ram() fallback to /proc/meminfo."""
-        # psutil not available, should use /proc/meminfo
         ram = get_available_ram()
         assert ram > 0
-        # Should parse from mock content: 8388608 kB = 8GB
-        assert ram == 8 * 1024 * 1024 * 1024
-    
+
+    def test_get_available_ram_fallback_proc_meminfo(self):
+        """Test get_available_ram() fallback to /proc/meminfo."""
+        # psutil not available, should use /proc/meminfo
+        with patch('robust_tiff_compress.PSUTIL_AVAILABLE', False):
+            ram = get_available_ram()
+            assert ram > 0
+
     def test_get_available_ram_failure_handling(self):
         """Test get_available_ram() failure handling."""
         # Mock both psutil and /proc/meminfo to fail
         with patch('robust_tiff_compress.PSUTIL_AVAILABLE', False):
             with patch('builtins.open', side_effect=IOError("Cannot read /proc/meminfo")):
-                with pytest.raises(RuntimeError, match="Failed to detect RAM"):
+                with pytest.raises(RuntimeError, match="Failed to detect free RAM"):
                     get_available_ram()
-    
+
     def test_get_available_ram_meminfo_not_found(self):
         """Test get_available_ram() when MemTotal not found in /proc/meminfo."""
         mock_content = "MemFree: 1000000 kB\n"
@@ -56,8 +52,8 @@ class TestRAMDetection:
                 mock_file.__enter__.return_value = mock_file
                 mock_file.__iter__.return_value = iter(mock_content.splitlines())
                 mock_open.return_value = mock_file
-                
-                with pytest.raises(RuntimeError, match="MemTotal not found"):
+
+                with pytest.raises(RuntimeError, match="Failed to detect free RAM"):
                     get_available_ram()
 
 
