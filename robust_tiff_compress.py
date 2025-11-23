@@ -105,7 +105,8 @@ def get_directory_ownership(directory: str) -> Optional[Tuple[int, int, int]]:
 
 def set_state_file_ownership(state_file: str) -> bool:
     """
-    Set STATE_FILE ownership to match its directory and set read+write permissions for owner.
+    Set STATE_FILE ownership to match its directory and set read+write permissions for group,
+    and read for others (rw-rw-r--).
     
     Args:
         state_file: Path to the state file
@@ -125,8 +126,8 @@ def set_state_file_ownership(state_file: str) -> bool:
     uid, gid, _ = dir_ownership
     
     # Set ownership to match directory
-    # Set permissions to read+write for owner (0o600 = rw-------)
-    return set_file_ownership(state_file, uid, gid, 0o600)
+    # Set permissions to read+write for owner and group, read for others (0o664 = rw-rw-r--)
+    return set_file_ownership(state_file, uid, gid, 0o664)
 
 
 class CompressionState:
