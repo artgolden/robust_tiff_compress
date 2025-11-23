@@ -1,0 +1,28 @@
+version: "0.2"
+
+services:
+  robust-tiff-compress:
+    image: artgolden/robust-tiff-compress:v0.1
+    container_name: robust-tiff-compress
+    restart: unless-stopped
+
+    # Mount your dataset into the container at the exact same path
+    volumes:
+      - /mnt/tank/rawdata:/mnt/tank/rawdata
+
+    # Optional: mount a /data directory if you want
+      - /mnt/tank/rawdata:/data
+
+    # Expose internal port 8000 to the host
+    ports:
+      - "8000:8000"
+
+    environment:
+      # Can be changed if needed
+      PORT: "8000"
+
+      # Tell your script to preserve file ownership after compression
+      PRESERVE_OWNERSHIP: "1"
+
+    # Run as specific user if you want (optional):
+    # user: "helper:biodata"

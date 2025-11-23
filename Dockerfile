@@ -25,6 +25,7 @@ COPY main.py .
 
 # Create /data directory for mounting
 RUN mkdir -p /data
+RUN mkdir -p /mnt/tank/rawdata
 
 # Expose webserver port
 EXPOSE 8000
