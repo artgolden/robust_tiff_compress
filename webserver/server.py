@@ -44,10 +44,16 @@ class LogCaptureHandler(logging.Handler):
                     os.makedirs(log_dir, exist_ok=True)
                 # Open file in append mode
                 self.log_file = open(self.log_file_path, 'a', encoding='utf-8')
+                # Change permissions to be read+write for group and others (0666)
+                try:
+                    os.chmod(self.log_file_path, 0o666)
+                except Exception as e:
+                    print(f"Error changing permissions of log file {self.log_file_path}: {e}")  # Ignore chmod errors
             except Exception as e:
                 # If file opening fails, log to store but don't fail completely
                 self.log_file = None
                 # We can't use logging here as it would create recursion, so we'll just continue
+                print(f"Error opening log file {self.log_file_path}: {e}")
     
     def emit(self, record):
         try:
