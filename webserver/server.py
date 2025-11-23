@@ -23,14 +23,31 @@ from robust_tiff_compress import run_compression
 
 
 class LogCaptureHandler(logging.Handler):
-    """Custom logging handler that captures logs to a list."""
+    """Custom logging handler that captures logs to a list and optionally to a file."""
     
-    def __init__(self, log_store: List[str], max_lines: int = 2000):
+    def __init__(self, log_store: List[str], max_lines: int = 2000, log_file_path: Optional[str] = None):
         super().__init__()
         self.log_store = log_store
         self.max_lines = max_lines
+        self.log_file_path = log_file_path
+        self.log_file = None
+        self._file_lock = threading.Lock()
         self.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', 
                                            datefmt='%Y-%m-%d %H:%M:%S'))
+        
+        # Open log file if path is provided
+        if self.log_file_path:
+            try:
+                # Ensure directory exists
+                log_dir = os.path.dirname(self.log_file_path)
+                if log_dir:
+                    os.makedirs(log_dir, exist_ok=True)
+                # Open file in append mode
+                self.log_file = open(self.log_file_path, 'a', encoding='utf-8')
+            except Exception as e:
+                # If file opening fails, log to store but don't fail completely
+                self.log_file = None
+                # We can't use logging here as it would create recursion, so we'll just continue
     
     def emit(self, record):
         try:
@@ -40,8 +57,28 @@ class LogCaptureHandler(logging.Handler):
                 # Keep only last max_lines to prevent memory issues
                 if len(self.log_store) > self.max_lines:
                     self.log_store.pop(0)
+            
+            # Also write to file if available
+            if self.log_file:
+                try:
+                    with self._file_lock:
+                        self.log_file.write(msg + '\n')
+                        self.log_file.flush()  # Ensure immediate write
+                except Exception:
+                    pass  # Ignore file write errors
         except Exception:
             pass  # Ignore errors in logging handler
+    
+    def close(self):
+        """Close the log file if it's open."""
+        super().close()
+        if self.log_file:
+            try:
+                with self._file_lock:
+                    self.log_file.close()
+            except Exception:
+                pass
+            self.log_file = None
 
 app = FastAPI(title="TIFF Compression Server", version="1.0.0")
 
@@ -265,8 +302,17 @@ def run_compression_thread(request: CompressionRequest):
     """Run compression in a background thread."""
     global compression_state
     
-    # Add log capture handler
-    log_handler = LogCaptureHandler(compression_state.get_log_store())
+    # Create log file path in the root of the directory being compressed
+    log_file_path = os.path.join(
+        request.folder,
+        f"compression_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    )
+    
+    # Add log capture handler with file logging
+    log_handler = LogCaptureHandler(
+        compression_state.get_log_store(),
+        log_file_path=log_file_path
+    )
     root_logger = logging.getLogger()
     root_logger.addHandler(log_handler)
     root_logger.setLevel(logging.INFO)
@@ -289,7 +335,8 @@ def run_compression_thread(request: CompressionRequest):
             force_recompress_skipped=request.force_recompress_skipped,
             force_recompress_processed=request.force_recompress_processed,
             progress_callback=progress_callback,
-            preserve_ownership=request.preserve_ownership
+            preserve_ownership=request.preserve_ownership,
+            save_log_file=False
         )
         
         if compression_state.should_stop():
@@ -300,8 +347,9 @@ def run_compression_thread(request: CompressionRequest):
         compression_state.set_error(str(e))
         logging.error(f"Compression error: {e}", exc_info=True)
     finally:
-        # Remove log handler
+        # Remove log handler and close file
         root_logger.removeHandler(log_handler)
+        log_handler.close()
 
 
 @app.get("/", response_class=HTMLResponse)

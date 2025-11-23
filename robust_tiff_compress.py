@@ -1225,7 +1225,8 @@ def run_compression(
     force_recompress_skipped: bool = False,
     force_recompress_processed: bool = False,
     progress_callback: Optional[Callable[[str, int, int, Dict], bool]] = None,
-    preserve_ownership: bool = False
+    preserve_ownership: bool = False,
+    save_log_file: bool = True
 ) -> Dict:
     """
     Run compression on TIFF files in the specified folder.
@@ -1267,7 +1268,10 @@ def run_compression(
         raise ValueError("Quality must be between 0 and 100")
     
     # Setup logging
-    setup_logging(log_dir=folder)
+    logging_dir = None
+    if save_log_file:
+        logging_dir = folder
+    setup_logging(log_dir=logging_dir)
     
     # Calculate threads for tifffile compression
     if threads is None:
