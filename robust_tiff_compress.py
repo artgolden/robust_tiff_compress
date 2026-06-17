@@ -1280,23 +1280,23 @@ def run_compression(
     # Validate inputs
     if not os.path.isdir(folder):
         raise ValueError(f"{folder} is not a directory")
-    
+
     if output and not os.path.isdir(os.path.dirname(os.path.abspath(output))):
         raise ValueError(f"Parent directory of {output} does not exist")
-    
+
     if quality < 0 or quality > 100:
         raise ValueError("Quality must be between 0 and 100")
-    
+
     # Setup logging
     logging_dir = None
     if save_log_file:
         logging_dir = folder
     setup_logging(log_dir=logging_dir)
-    
+
     # Calculate threads for tifffile compression
     if threads is None:
         threads = calculate_optimal_threads()
-    
+
     # Get available RAM info (fail if detection fails)
     try:
         available_ram = get_available_ram()
@@ -1304,8 +1304,35 @@ def run_compression(
         logging.error(f"Failed to detect free RAM: {e}")
         raise RuntimeError(f"Failed to detect free RAM: {e}") from e
     max_file_size = int(available_ram * RAM_SIZE_LIMIT_RATIO)
-    
+
+    # Log version from 'version' file and current git commit hash
+    try:
+        with open(os.path.join(os.path.dirname(__file__), "version")) as vf:
+            version_str = vf.read().strip()
+    except Exception as e:
+        version_str = "unknown"
+        logging.warning(f"Could not read version file: {e}")
+
+    commit_hash = "unknown"
+    try:
+        import subprocess
+
+        repo_dir = os.path.dirname(os.path.abspath(__file__))
+        commit_hash = (
+            subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=repo_dir,
+                stderr=subprocess.DEVNULL,
+            )
+            .decode("utf-8")
+            .strip()
+        )
+    except Exception as e:
+        # Not fatal; ignore
+        pass
+
     logging.info("Starting compression (sequential processing)")
+    logging.info(f"Version: {version_str}, Commit: {commit_hash}")
     logging.info(f"Tifffile compression threads: {threads}")
     logging.info(f"Compression: {compression}, Quality: {quality}")
     logging.info(f"Free RAM: {available_ram / (1024**3):.2f} GB, Max file size: {max_file_size / (1024**3):.2f} GB (40% of free RAM)")
@@ -1322,11 +1349,11 @@ def run_compression(
         logging.info("FORCE RECOMPRESS PROCESSED MODE - Will recompress all previously processed files")
     if preserve_ownership:
         logging.info("PRESERVE OWNERSHIP MODE - File ownership and permissions will be preserved")
-    
+
     # Disclaimer about local filesystem requirement
     logging.info("NOTE: This tool is designed for LOCAL filesystems only. Network filesystems are not supported.")
     logging.info("NOTE: State files are stored per directory in a %s/ subdirectory.", STATE_DIR)
-    
+
     # Cleanup temp files if requested
     if cleanup_temp:
         cleaned = cleanup_temp_files(folder, cleanup_error_files=cleanup_error_files)
@@ -1334,7 +1361,7 @@ def run_compression(
             logging.info(f"Cleaned up {cleaned} temporary files")
         if cleanup_error_files:
             logging.warning("Cleaned up error-marked files - ensure you've investigated any issues")
-    
+
     # Acquire lock
     lock_file = os.path.join(folder, LOCK_FILE)
     with FileLock(lock_file):
@@ -1348,9 +1375,9 @@ def run_compression(
         total_files = len(tiff_files)
         processed_count = count_processed_files(folder)
         skipped_count = count_skipped_files(folder)
-        
+
         logging.info(f"Found {total_files} files to compress ({processed_count} already processed, {skipped_count} already skipped across all directories)")
-        
+
         if total_files == 0:
             logging.info("No files to compress")
             return {
@@ -1361,7 +1388,7 @@ def run_compression(
                 'stop_processing': False,
                 'compression_ratios': []
             }
-        
+
         # Process files sequentially
         results = process_tiff_files(
             tiff_files,
@@ -1378,7 +1405,7 @@ def run_compression(
             progress_callback=progress_callback,
             preserve_ownership=preserve_ownership
         )
-        
+
         # Summary
         logging.info("=" * 60)
         logging.info("Compression Summary:")
@@ -1391,10 +1418,10 @@ def run_compression(
             logging.warning(f"  Compression stopped early after {results['consecutive_errors']} consecutive errors")
             logging.warning(f"  Warning file created: {os.path.join(folder, WARNING_FILE)}")
         logging.info("=" * 60)
-        
+
         # Print compression ratio histogram
         print_compression_ratio_histogram(results.get('compression_ratios', []))
-        
+
         return results
 
 

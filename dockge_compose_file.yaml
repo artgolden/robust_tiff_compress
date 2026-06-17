@@ -2,7 +2,7 @@ version: "0.3"
 
 services:
   robust-tiff-compress:
-    image: artgolden/robust-tiff-compress:v0.2
+    image: artgolden/robust-tiff-compress:latest
     container_name: robust-tiff-compress
     restart: unless-stopped
 
