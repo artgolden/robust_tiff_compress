@@ -37,7 +37,9 @@ from tqdm import tqdm
 # Constants
 MIN_FILE_SIZE = 1024 * 1024  # 1MB in bytes
 COMPRESSION_RATIO_THRESHOLD = 1.43  # At least 30% reduction (1/1.43 ≈ 0.70, so 30% reduction minimum)
+STATE_DIR = "_compression_state"
 STATE_FILE = "_compression_state.json"
+LEGACY_STATE_FILE = STATE_FILE  # flat file in image directory (pre-subdirectory layout)
 TEMP_SUFFIX = ".compressing"
 TEMP_ERROR_SUFFIX = ".compressing.ERROR"
 RAM_SIZE_LIMIT_RATIO = 0.40  # Don't compress files >40% of free RAM
@@ -103,43 +105,53 @@ def get_directory_ownership(directory: str) -> Optional[Tuple[int, int, int]]:
         return None
 
 
-def set_state_file_ownership(state_file: str) -> bool:
+def set_state_file_ownership(state_file: str, image_directory: str) -> bool:
     """
-    Set STATE_FILE ownership to match its directory and set read+write permissions for group,
-    and read for others (rw-rw-r--).
+    Set STATE_DIR and STATE_FILE ownership to match the image directory.
+    State file permissions: read+write for owner and group, read for others (rw-rw-r--).
     
     Args:
         state_file: Path to the state file
+        image_directory: Directory containing the TIFF files tracked by this state file
         
     Returns:
         True if successful, False otherwise
     """
-    state_dir = os.path.dirname(state_file)
-    if not state_dir:
-        state_dir = '.'
-    
-    # Get directory ownership
-    dir_ownership = get_directory_ownership(state_dir)
+    dir_ownership = get_directory_ownership(image_directory)
     if dir_ownership is None:
         return False
     
     uid, gid, _ = dir_ownership
-    
-    # Set ownership to match directory
-    # Set permissions to read+write for owner and group, read for others (0o664 = rw-rw-r--)
+    state_subdir = os.path.dirname(state_file)
+    if state_subdir:
+        set_file_ownership(state_subdir, uid, gid, 0o775)
     return set_file_ownership(state_file, uid, gid, 0o664)
 
 
 class CompressionState:
     """Manages compression state for resumability per directory."""
 
-    def __init__(self, state_file: str, preserve_ownership: bool = False):
-        self.state_file = state_file
-        self.directory = os.path.dirname(state_file)
+    def __init__(self, image_directory: str, preserve_ownership: bool = False):
+        self.directory = image_directory
+        self.state_file = get_state_file_for_directory(image_directory)
         self.state: Dict = {}
         self.lock = threading.Lock()
         self.preserve_ownership = preserve_ownership
+        self._migrate_legacy_state_file()
         self._load()
+
+    def _migrate_legacy_state_file(self):
+        """Move a legacy flat state file into the state subdirectory."""
+        legacy_path = os.path.join(self.directory, LEGACY_STATE_FILE)
+        if not os.path.exists(legacy_path) or os.path.exists(self.state_file):
+            return
+        state_subdir = get_state_dir_for_directory(self.directory)
+        try:
+            os.makedirs(state_subdir, exist_ok=True)
+            os.replace(legacy_path, self.state_file)
+            logging.info(f"Migrated legacy state file to {self.state_file}")
+        except OSError as e:
+            logging.warning(f"Could not migrate legacy state file {legacy_path}: {e}")
 
     def _load(self):
         """Load state from file."""
@@ -169,14 +181,14 @@ class CompressionState:
             
             # Set ownership and permissions if preserve_ownership is enabled
             if self.preserve_ownership:
-                set_state_file_ownership(self.state_file)
+                set_state_file_ownership(self.state_file, self.directory)
         except Exception as e:
             logging.error(f"Failed to save state file {self.state_file}: {e}")
             if os.path.exists(temp_file):
                 os.remove(temp_file)
 
     def is_processed(self, file_path: str) -> bool:
-        """Check if file has been processed (by filename only, not full path)."""
+        """Check if file has been processed."""
         f_path = str(file_path)
         if not f_path.startswith(self.directory):
             raise ValueError(f"File path {f_path} is not in directory {self.directory}")
@@ -185,7 +197,7 @@ class CompressionState:
 
     def mark_processed(self, file_path: str, compression_ratio: float, 
                       compression_type: str, original_size: int, compressed_size: int):
-        """Mark file as processed (by filename only, not full path)."""
+        """Mark file as processed."""
         f_path = str(file_path)
         if not f_path.startswith(self.directory):
             raise ValueError(f"File path {f_path} is not in directory {self.directory}")
@@ -207,7 +219,7 @@ class CompressionState:
             return len(self.state.get('processed', {}))
 
     def is_skipped(self, file_path: str) -> bool:
-        """Check if file has been skipped (by filename only, not full path)."""
+        """Check if file has been skipped."""
         f_path = str(file_path)
         if not f_path.startswith(self.directory):
             raise ValueError(f"File path {f_path} is not in directory {self.directory}")
@@ -215,7 +227,7 @@ class CompressionState:
             return f_path in self.state.get("skipped", {})
 
     def mark_skipped(self, file_path: str, reason: str, compression_ratio: Optional[float] = None):
-        """Mark file as skipped (by filename only, not full path)."""
+        """Mark file as skipped."""
         f_path = str(file_path)
         if not f_path.startswith(self.directory):
             raise ValueError(f"File path {f_path} is not in directory {self.directory}")
@@ -518,11 +530,10 @@ def compress_tiff_file(
         (success, error_message, compression_ratio)
         compression_ratio is None if skipped or error, otherwise the ratio value
     """
-    # Get state file for the directory containing the file
+    # Get state for the directory containing the file
     if state is None:
         file_dir = os.path.dirname(file_path)
-        state_file = get_state_file_for_directory(file_dir)
-        state = CompressionState(state_file, preserve_ownership=preserve_ownership)
+        state = CompressionState(file_dir, preserve_ownership=preserve_ownership)
     
     # Record original file ownership and permissions if preserve_ownership is enabled
     original_ownership = None
@@ -769,21 +780,30 @@ def compress_tiff_file(
         return False, f"Unexpected error: {e}", None
 
 
+def get_state_dir_for_directory(directory: str) -> str:
+    """Get the path to the state subdirectory for a given image directory."""
+    return os.path.join(directory, STATE_DIR)
+
+
 def get_state_file_for_directory(directory: str) -> str:
-    """Get the path to the state file for a given directory."""
-    return os.path.join(directory, STATE_FILE)
+    """Get the path to the state file for a given image directory."""
+    return os.path.join(get_state_dir_for_directory(directory), STATE_FILE)
+
+
+def _prune_walk_dirs(dirs: List[str]) -> None:
+    """Remove hidden directories and the state subdirectory from os.walk descent."""
+    dirs[:] = [d for d in dirs if not d.startswith('.') and d != STATE_DIR]
 
 
 def count_processed_files(root_dir: str) -> int:
     """Count total number of processed files across all directories."""
     total_processed = 0
     for root, dirs, files in os.walk(root_dir):
-        # Skip hidden directories
-        dirs[:] = [d for d in dirs if not d.startswith('.')]
+        _prune_walk_dirs(dirs)
         
         state_file = get_state_file_for_directory(root)
         if os.path.exists(state_file):
-            state = CompressionState(state_file)
+            state = CompressionState(root)
             total_processed += state.get_processed_count()
     
     return total_processed
@@ -793,12 +813,11 @@ def count_skipped_files(root_dir: str) -> int:
     """Count total number of skipped files across all directories."""
     total_skipped = 0
     for root, dirs, files in os.walk(root_dir):
-        # Skip hidden directories
-        dirs[:] = [d for d in dirs if not d.startswith('.')]
+        _prune_walk_dirs(dirs)
         
         state_file = get_state_file_for_directory(root)
         if os.path.exists(state_file):
-            state = CompressionState(state_file)
+            state = CompressionState(root)
             total_skipped += state.get_skipped_count()
     
     return total_skipped
@@ -810,7 +829,7 @@ def find_tiff_files(root_dir: str, force_recompress_skipped: bool = False,
     
     Processes directories one at a time, checking for state file in each directory.
     Only files in the same directory as the state file are tracked by that state file.
-    Skips hidden directories and directories named as STATE_FILE.
+    Skips hidden directories and the state subdirectory (STATE_DIR).
     
     Args:
         root_dir: Root directory to search for TIFF files
@@ -820,26 +839,26 @@ def find_tiff_files(root_dir: str, force_recompress_skipped: bool = False,
     tiff_files = []
     processed_dirs = set()  # Track directories we've already processed
 
-    for root, _, files in os.walk(root_dir):
+    for root, dirs, files in os.walk(root_dir):
+        _prune_walk_dirs(dirs)
+
         # Skip hidden directories
         if os.path.basename(root).startswith('.'):
             continue
-        # Skip this directory if it is named after the STATE_FILE
-        if os.path.basename(root) == STATE_FILE:
+        # Skip legacy directory accidentally named after the state file
+        if os.path.basename(root) == LEGACY_STATE_FILE:
             continue
 
         # Skip if we've already processed this directory (shouldn't happen, but safety check)
         if root in processed_dirs:
             continue
 
-        # Get state file for this directory
-        state_file = get_state_file_for_directory(root)
-        state = CompressionState(state_file)
+        state = CompressionState(root)
 
         # Process files in this directory
         for file in files:
-            # Skip state file itself
-            if file == STATE_FILE:
+            # Skip legacy flat state file if still present in the image directory
+            if file == LEGACY_STATE_FILE:
                 continue
             if file.lower().endswith(('.tif', '.tiff')):
                 file_path = os.path.join(root, file)
@@ -1248,8 +1267,8 @@ def run_compression(
         progress_callback: Optional callback function(current_file, current_index, total_files, stats) -> bool
                           Returns True to continue, False to stop compression
         preserve_ownership: Whether to preserve file ownership and permissions (useful when running as root in Docker)
-                           When enabled, compressed files retain original ownership/permissions, and STATE_FILE
-                           will have ownership matching its directory with read+write for owner.
+                           When enabled, compressed files retain original ownership/permissions, and state
+                           files in STATE_DIR/ will have ownership matching the image directory.
     
     Returns:
         Dictionary with compression results including success_count, skip_count, error_count, etc.
@@ -1306,7 +1325,7 @@ def run_compression(
     
     # Disclaimer about local filesystem requirement
     logging.info("NOTE: This tool is designed for LOCAL filesystems only. Network filesystems are not supported.")
-    logging.info("NOTE: State files are created per directory. Each directory tracks only its own files.")
+    logging.info("NOTE: State files are stored per directory in a %s/ subdirectory.", STATE_DIR)
     
     # Cleanup temp files if requested
     if cleanup_temp:
@@ -1485,7 +1504,7 @@ Examples:
         help='Preserve file ownership and permissions when compressing files. '
              'Useful when running as root (e.g., in Docker containers). '
              'Compressed files will retain original ownership/permissions, '
-             'and STATE_FILE will have ownership matching its directory with read+write for owner.'
+             f'and state files in {STATE_DIR}/ will have ownership matching the image directory. '
              'Also set by PRESERVE_OWNERSHIP environment variable.'
     )
     

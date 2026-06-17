@@ -45,7 +45,7 @@ class TestDiskSpaceFailures:
         self, medium_tiff_file, output_dir, state_file, mock_ram_large, mock_disk_space_insufficient
     ):
         """Test error handling when disk space is insufficient for output compression."""
-        state = CompressionState(str(state_file))
+        state = CompressionState(str(medium_tiff_file.parent))
         output_path = output_dir / medium_tiff_file.name
         
         success, message, compression_ratio = compress_tiff_file(
@@ -69,7 +69,7 @@ class TestFilePermissionFailures:
         self, read_only_file, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test handling of read-only input file."""
-        state = CompressionState(str(state_file))
+        state = CompressionState(str(read_only_file.parent))
         
         # Try to compress read-only file
         # Note: On some systems, read-only files can still be read
@@ -92,7 +92,7 @@ class TestFilePermissionFailures:
         self, medium_tiff_file, read_only_dir, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test handling of read-only output directory."""
-        state = CompressionState(str(state_file))
+        state = CompressionState(str(medium_tiff_file.parent))
         output_path = read_only_dir / medium_tiff_file.name
         
         success, message, compression_ratio = compress_tiff_file(
@@ -167,7 +167,7 @@ class TestCorruptedFileHandling:
         self, medium_tiff_file, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test detection of wrong dtype after compression."""
-        state = CompressionState(str(state_file))
+        state = CompressionState(str(medium_tiff_file.parent))
         
         # Mock verify_tiff_file to return array with wrong dtype
         original_verify = robust_tiff_compress.verify_tiff_file
@@ -200,7 +200,7 @@ class TestCorruptedFileHandling:
         self, medium_tiff_file, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test detection of wrong shape after compression."""
-        state = CompressionState(str(state_file))
+        state = CompressionState(str(medium_tiff_file.parent))
         
         # Mock verify_tiff_file to return array with wrong shape
         original_verify = robust_tiff_compress.verify_tiff_file
@@ -256,7 +256,7 @@ class TestCompressionFailures:
         self, medium_tiff_file, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test handling of compression exceptions."""
-        state = CompressionState(str(state_file))
+        state = CompressionState(str(medium_tiff_file.parent))
         
         # Mock tifffile.TiffWriter to raise exception
         with patch('tifffile.TiffWriter') as mock_writer:
@@ -279,7 +279,7 @@ class TestCompressionFailures:
         self, medium_tiff_file, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test handling of temp file creation failure."""
-        state = CompressionState(str(state_file))
+        state = CompressionState(str(medium_tiff_file.parent))
         
         # Mock open to fail when creating temp file
         original_open = open
@@ -307,7 +307,7 @@ class TestCompressionFailures:
         self, medium_tiff_file, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test detection of empty compressed file."""
-        state = CompressionState(str(state_file))
+        state = CompressionState(str(medium_tiff_file.parent))
         
         # Mock os.path.getsize to return 0 for temp file
         original_getsize = os.path.getsize
@@ -340,7 +340,7 @@ class TestFileOperationFailures:
         self, medium_tiff_file, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test handling of move operation failure - verify original file preservation and error backup creation."""
-        state = CompressionState(str(state_file))
+        state = CompressionState(str(medium_tiff_file.parent))
         original_size = os.path.getsize(medium_tiff_file)
         original_mtime = os.path.getmtime(medium_tiff_file)
         temp_path = str(medium_tiff_file) + TEMP_SUFFIX
@@ -463,7 +463,7 @@ class TestTempFileErrorMarking:
         self, medium_tiff_file, state_file, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test that temp files are marked with .ERROR suffix on failure."""
-        state = CompressionState(str(state_file))
+        state = CompressionState(str(medium_tiff_file.parent))
         temp_path = Path(str(medium_tiff_file) + TEMP_SUFFIX)
         error_path = Path(str(medium_tiff_file) + TEMP_ERROR_SUFFIX)
         

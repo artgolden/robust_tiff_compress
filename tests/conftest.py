@@ -24,7 +24,15 @@ import robust_tiff_compress
 MIN_FILE_SIZE = robust_tiff_compress.MIN_FILE_SIZE
 COMPRESSION_RATIO_THRESHOLD = robust_tiff_compress.COMPRESSION_RATIO_THRESHOLD
 RAM_SIZE_LIMIT_RATIO = robust_tiff_compress.RAM_SIZE_LIMIT_RATIO
+STATE_DIR = robust_tiff_compress.STATE_DIR
 STATE_FILE = robust_tiff_compress.STATE_FILE
+
+
+def image_dir_for_state_file(state_file: Path) -> Path:
+    """Return the image directory tracked by a state file path."""
+    if state_file.parent.name == STATE_DIR:
+        return state_file.parent.parent
+    return state_file.parent
 TEMP_SUFFIX = robust_tiff_compress.TEMP_SUFFIX
 TEMP_ERROR_SUFFIX = robust_tiff_compress.TEMP_ERROR_SUFFIX
 LOCK_FILE = robust_tiff_compress.LOCK_FILE
@@ -204,27 +212,39 @@ def tiff_file_not_compressible(tmp_test_dir):
 
 
 @pytest.fixture
+def state_dir(tmp_test_dir):
+    """Path to the state subdirectory for tmp_test_dir."""
+    return tmp_test_dir / STATE_DIR
+
+
+@pytest.fixture
 def state_file(tmp_test_dir):
-    """Create a clean state file path."""
-    return tmp_test_dir / STATE_FILE
+    """Path to the state JSON file inside the state subdirectory."""
+    return tmp_test_dir / STATE_DIR / STATE_FILE
+
+
+@pytest.fixture
+def compression_state(tmp_test_dir):
+    """CompressionState bound to tmp_test_dir as the image directory."""
+    return robust_tiff_compress.CompressionState(str(tmp_test_dir))
 
 
 @pytest.fixture
 def existing_state_file(state_file):
     """Create a state file with some existing processed files."""
-    dir_path = os.path.dirname(str(state_file))
+    dir_path = str(image_dir_for_state_file(state_file))
     file1_path = os.path.join(dir_path, "file1.tif")
     file2_path = os.path.join(dir_path, "file2.tif")
     state_data = {
         "processed": {
-            file1_path: {  # Use filename only, not full path
+            file1_path: {
                 "compression_ratio": 2.5,
                 "compression_type": "zlib",
                 "original_size": 1000000,
                 "compressed_size": 400000,
                 "timestamp": "2024-01-01T00:00:00"
             },
-            file2_path: {  # Use filename only, not full path
+            file2_path: {
                 "compression_ratio": 3.0,
                 "compression_type": "jpeg_2000_lossy",
                 "original_size": 2000000,
@@ -233,6 +253,7 @@ def existing_state_file(state_file):
             }
         }
     }
+    state_file.parent.mkdir(parents=True, exist_ok=True)
     with open(state_file, 'w') as f:
         json.dump(state_data, f)
     return state_file
@@ -241,6 +262,7 @@ def existing_state_file(state_file):
 @pytest.fixture
 def corrupted_state_file(state_file):
     """Create a corrupted state file (invalid JSON)."""
+    state_file.parent.mkdir(parents=True, exist_ok=True)
     with open(state_file, 'w') as f:
         f.write("{ invalid json }")
     return state_file

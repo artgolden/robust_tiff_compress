@@ -9,9 +9,10 @@ from pathlib import Path
 import robust_tiff_compress
 from robust_tiff_compress import (
     compress_tiff_file,
-    CompressionState,
     MIN_FILE_SIZE,
     COMPRESSION_RATIO_THRESHOLD,
+    get_state_file_for_directory,
+    STATE_DIR,
 )
 
 
@@ -43,6 +44,9 @@ class TestBasicCompression:
             # Verify file was compressed
             compressed_size = os.path.getsize(medium_tiff_file)
             assert compressed_size < original_size or "Skipped" in message
+            state_path = get_state_file_for_directory(str(medium_tiff_file.parent))
+            assert os.path.exists(state_path)
+            assert STATE_DIR in state_path
     
     @pytest.mark.parametrize("compression", ["zlib", "jpeg_2000_lossy"])
     def test_compress_to_output_directory(

@@ -17,6 +17,7 @@ from robust_tiff_compress import (
     cleanup_temp_files,
     process_tiff_files,
     calculate_optimal_threads,
+    get_state_file_for_directory,
 )
 
 
@@ -300,8 +301,9 @@ class TestRealWorldScenarios:
         
         # Process first file
         if tiff_files1:
+            first_file = tiff_files1[0]
             success, message, compression_ratio = compress_tiff_file(
-                str(tiff_files1[0]),
+                str(first_file),
                 None,
                 "zlib",
                 85,
@@ -309,6 +311,7 @@ class TestRealWorldScenarios:
                 None,  # Will use per-directory state
                 dry_run=False
             )
+            assert os.path.exists(get_state_file_for_directory(str(Path(first_file).parent)))
         
         # Find files again (should skip processed one)
         tiff_files2 = find_tiff_files(str(root_dir))

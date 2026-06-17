@@ -8,44 +8,43 @@ from pathlib import Path
 from unittest.mock import patch, mock_open
 
 import robust_tiff_compress
-from robust_tiff_compress import CompressionState, STATE_FILE
+from robust_tiff_compress import CompressionState, STATE_DIR, STATE_FILE, get_state_file_for_directory
+from tests.conftest import image_dir_for_state_file
 
 
 class TestStateFileOperations:
     """Test state file loading, saving, and operations."""
     
-    def test_state_file_creation(self, state_file):
+    def test_state_file_creation(self, state_file, tmp_test_dir):
         """Test that state file is created on first use."""
-        state = CompressionState(str(state_file))
+        state = CompressionState(str(tmp_test_dir))
         assert not state_file.exists()  # Not created until first save
 
-        # Use full file path for marking as processed
-        file_path = os.path.join(os.path.dirname(str(state_file)), "file.tif")
+        file_path = os.path.join(str(tmp_test_dir), "file.tif")
         state.mark_processed(file_path, 2.5, "zlib", 1000000, 400000)
 
         assert state_file.exists(), "State file should be created"
+        assert state_file.parent.name == STATE_DIR
 
     def test_state_file_loading(self, existing_state_file):
         """Test loading state from existing file."""
-        state = CompressionState(str(existing_state_file))
+        image_dir = str(image_dir_for_state_file(existing_state_file))
+        state = CompressionState(image_dir)
 
-        # Use full file path for checking processed
-        dir_path = os.path.dirname(str(existing_state_file))
-        file1_path = os.path.join(dir_path, "file1.tif")
-        file2_path = os.path.join(dir_path, "file2.tif")
-        file3_path = os.path.join(dir_path, "file3.tif")
+        file1_path = os.path.join(image_dir, "file1.tif")
+        file2_path = os.path.join(image_dir, "file2.tif")
+        file3_path = os.path.join(image_dir, "file3.tif")
 
         assert state.is_processed(file1_path)
         assert state.is_processed(file2_path)
         assert not state.is_processed(file3_path)
 
-    def test_state_file_saving_atomic(self, state_file):
+    def test_state_file_saving_atomic(self, state_file, tmp_test_dir):
         """Test that state file is saved atomically."""
-        state = CompressionState(str(state_file))
+        state = CompressionState(str(tmp_test_dir))
 
-        dir_path = os.path.dirname(str(state_file))
-        file1_path = os.path.join(dir_path, "file1.tif")
-        file2_path = os.path.join(dir_path, "file2.tif")
+        file1_path = os.path.join(str(tmp_test_dir), "file1.tif")
+        file2_path = os.path.join(str(tmp_test_dir), "file2.tif")
 
         state.mark_processed(file1_path, 2.0, "zlib", 1000000, 500000)
         state.mark_processed(file2_path, 3.0, "jpeg_2000_lossy", 2000000, 666666)
@@ -57,13 +56,12 @@ class TestStateFileOperations:
             assert "processed" in data
             assert len(data["processed"]) == 2
 
-    def test_mark_processed(self, state_file):
+    def test_mark_processed(self, state_file, tmp_test_dir):
         """Test marking files as processed."""
-        state = CompressionState(str(state_file))
+        state = CompressionState(str(tmp_test_dir))
 
-        dir_path = os.path.dirname(str(state_file))
         filename = "file.tif"
-        file_path = os.path.join(dir_path, filename)
+        file_path = os.path.join(str(tmp_test_dir), filename)
         compression_ratio = 2.5
         compression_type = "zlib"
         original_size = 1000000
@@ -90,28 +88,25 @@ class TestStateFileOperations:
             assert file_data["compressed_size"] == compressed_size
             assert "timestamp" in file_data
 
-    def test_is_processed(self, state_file):
+    def test_is_processed(self, tmp_test_dir):
         """Test checking if file is processed."""
-        state = CompressionState(str(state_file))
+        state = CompressionState(str(tmp_test_dir))
 
-        dir_path = os.path.dirname(str(state_file))
         filename = "file.tif"
-        file_path = os.path.join(dir_path, filename)
+        file_path = os.path.join(str(tmp_test_dir), filename)
         assert not state.is_processed(file_path)
 
         state.mark_processed(file_path, 2.0, "zlib", 1000000, 500000)
         assert state.is_processed(file_path)
 
-    def test_get_processed_count(self, state_file):
+    def test_get_processed_count(self, tmp_test_dir):
         """Test getting count of processed files."""
-        state = CompressionState(str(state_file))
-
-        dir_path = os.path.dirname(str(state_file))
+        state = CompressionState(str(tmp_test_dir))
 
         assert state.get_processed_count() == 0
 
-        file1_path = os.path.join(dir_path, "file1.tif")
-        file2_path = os.path.join(dir_path, "file2.tif")
+        file1_path = os.path.join(str(tmp_test_dir), "file1.tif")
+        file2_path = os.path.join(str(tmp_test_dir), "file2.tif")
         state.mark_processed(file1_path, 2.0, "zlib", 1000000, 500000)
         assert state.get_processed_count() == 1
 
@@ -120,35 +115,63 @@ class TestStateFileOperations:
 
     def test_corrupted_state_file_handling(self, corrupted_state_file):
         """Test handling of corrupted state file (invalid JSON)."""
-        # Should not raise exception, should start fresh
-        state = CompressionState(str(corrupted_state_file))
+        image_dir = str(image_dir_for_state_file(corrupted_state_file))
+        state = CompressionState(image_dir)
 
-        # Should start with empty state
         assert state.get_processed_count() == 0
-        dir_path = os.path.dirname(str(corrupted_state_file))
-        file_path = os.path.join(dir_path, "any_file.tif")
+        file_path = os.path.join(image_dir, "any_file.tif")
         assert not state.is_processed(file_path)
 
     def test_missing_state_file(self, tmp_test_dir):
         """Test handling of missing state file."""
-        state_file = tmp_test_dir / "nonexistent_state.json"
-        assert not state_file.exists()
+        state_path = Path(get_state_file_for_directory(str(tmp_test_dir)))
+        assert not state_path.exists()
 
-        state = CompressionState(str(state_file))
+        state = CompressionState(str(tmp_test_dir))
         assert state.get_processed_count() == 0
-        dir_path = os.path.dirname(str(state_file))
-        file_path = os.path.join(dir_path, "any_file.tif")
+        file_path = os.path.join(str(tmp_test_dir), "any_file.tif")
         assert not state.is_processed(file_path)
+
+    def test_state_subdirectory_created_on_first_save(self, tmp_test_dir, state_dir):
+        """Test that the state subdirectory is created on first save."""
+        assert not state_dir.exists()
+        state = CompressionState(str(tmp_test_dir))
+        file_path = os.path.join(str(tmp_test_dir), "file.tif")
+        state.mark_processed(file_path, 2.0, "zlib", 1000000, 500000)
+        assert state_dir.exists()
+
+    def test_legacy_flat_state_file_migration(self, tmp_test_dir, state_file):
+        """Test migration of legacy flat state file into the state subdirectory."""
+        legacy_path = tmp_test_dir / STATE_FILE
+        file_path = os.path.join(str(tmp_test_dir), "file1.tif")
+        legacy_data = {
+            "processed": {
+                file_path: {
+                    "compression_ratio": 2.0,
+                    "compression_type": "zlib",
+                    "original_size": 1000000,
+                    "compressed_size": 500000,
+                    "timestamp": "2024-01-01T00:00:00",
+                }
+            }
+        }
+        with open(legacy_path, 'w') as f:
+            json.dump(legacy_data, f)
+
+        state = CompressionState(str(tmp_test_dir))
+
+        assert not legacy_path.exists()
+        assert state_file.exists()
+        assert state.is_processed(file_path)
+        assert state.get_processed_count() == 1
     
-    def test_state_file_io_error_handling(self, state_file):
+    def test_state_file_io_error_handling(self, tmp_test_dir):
         """Test handling of IO errors when reading state file."""
-        # Create a state file that will cause IO error
+        state_file = Path(get_state_file_for_directory(str(tmp_test_dir)))
         state_file.parent.mkdir(parents=True, exist_ok=True)
         
-        # Make directory read-only to cause write error (on some systems)
-        # For this test, we'll mock the file operations
         with patch('builtins.open', side_effect=IOError("Permission denied")):
-            state = CompressionState(str(state_file))
+            state = CompressionState(str(tmp_test_dir))
             # Should handle error gracefully and start with empty state
             assert state.get_processed_count() == 0
 
@@ -157,15 +180,13 @@ class TestResumeFunctionality:
     """Test resumability features."""
 
     def test_skip_already_processed_files(
-        self, medium_tiff_file, state_file, mock_ram_large, mock_disk_space_sufficient
+        self, medium_tiff_file, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test that already processed files are skipped."""
-        from robust_tiff_compress import compress_tiff_file, get_state_file_for_directory
+        from robust_tiff_compress import compress_tiff_file
 
-        # Get state file for the directory containing the file
         file_dir = str(medium_tiff_file.parent)
-        state_file_path = get_state_file_for_directory(file_dir)
-        state = CompressionState(state_file_path)
+        state = CompressionState(file_dir)
 
         # Mark file as already processed (using filename only)
         state.mark_processed(medium_tiff_file, 2.5, "zlib", 1000000, 400000)
@@ -188,16 +209,14 @@ class TestResumeFunctionality:
     def test_resume_after_interruption(
         self, sample_tiff_files):
         """Test resuming compression after interruption."""
-        from robust_tiff_compress import find_tiff_files, get_state_file_for_directory
+        from robust_tiff_compress import find_tiff_files
 
         root_dir = sample_tiff_files[-1].parent
 
-        # Process first two files - mark them in their respective directories
         for i in [1, 2, 4]:
             file_path = sample_tiff_files[i]
             file_dir = str(file_path.parent)
-            state_file_path = get_state_file_for_directory(file_dir)
-            state = CompressionState(state_file_path)
+            state = CompressionState(file_dir)
             state.mark_processed(
                 file_path,
                 2.0 + i * 0.5,
@@ -217,15 +236,13 @@ class TestResumeFunctionality:
         assert not (found_paths & processed_paths), \
             "Already processed files should not be found"
 
-    def test_state_persistence_across_runs(self, state_file):
+    def test_state_persistence_across_runs(self, tmp_test_dir):
         """Test that state persists across multiple CompressionState instances."""
-        # First instance
-        state1 = CompressionState(str(state_file))
+        state1 = CompressionState(str(tmp_test_dir))
         state1.mark_processed(os.path.join(state1.directory, "file1.tif"), 2.0, "zlib", 1000000, 500000)
         state1.mark_processed(os.path.join(state1.directory, "file2.tif"), 3.0, "zlib", 2000000, 666666)
 
-        # Second instance (simulating new run)
-        state2 = CompressionState(str(state_file))
+        state2 = CompressionState(str(tmp_test_dir))
 
         # Should see files from first instance
         assert state2.is_processed(os.path.join(state2.directory, "file1.tif"))
@@ -236,11 +253,11 @@ class TestResumeFunctionality:
 class TestStateThreadSafety:
     """Test thread safety of state operations."""
     
-    def test_concurrent_mark_processed(self, state_file):
+    def test_concurrent_mark_processed(self, tmp_test_dir):
         """Test that marking files concurrently is thread-safe."""
         import threading
         
-        state = CompressionState(str(state_file))
+        state = CompressionState(str(tmp_test_dir))
         results = []
         
         def mark_file(file_num):
@@ -273,12 +290,11 @@ class TestStateThreadSafety:
 class TestSkippedFileTracking:
     """Test tracking and handling of skipped files."""
 
-    def test_mark_skipped(self, state_file):
+    def test_mark_skipped(self, state_file, tmp_test_dir):
         """Test marking files as skipped."""
-        state = CompressionState(str(state_file))
+        state = CompressionState(str(tmp_test_dir))
 
-        dir_path = os.path.dirname(str(state_file))
-        file_path = os.path.join(dir_path, "file.tif")
+        file_path = os.path.join(str(tmp_test_dir), "file.tif")
         reason = "compression ratio 1.2 < 1.43"
         compression_ratio = 1.2
 
@@ -296,27 +312,24 @@ class TestSkippedFileTracking:
             assert file_data["compression_ratio"] == compression_ratio
             assert "timestamp" in file_data
 
-    def test_is_skipped(self, state_file):
+    def test_is_skipped(self, tmp_test_dir):
         """Test checking if file is skipped."""
-        state = CompressionState(str(state_file))
+        state = CompressionState(str(tmp_test_dir))
 
-        dir_path = os.path.dirname(str(state_file))
-        file_path = os.path.join(dir_path, "file.tif")
+        file_path = os.path.join(str(tmp_test_dir), "file.tif")
         assert not state.is_skipped(file_path)
 
         state.mark_skipped(file_path, "test reason", 1.2)
         assert state.is_skipped(file_path)
 
-    def test_get_skipped_count(self, state_file):
+    def test_get_skipped_count(self, tmp_test_dir):
         """Test getting count of skipped files."""
-        state = CompressionState(str(state_file))
-
-        dir_path = os.path.dirname(str(state_file))
+        state = CompressionState(str(tmp_test_dir))
 
         assert state.get_skipped_count() == 0
 
-        file1_path = os.path.join(dir_path, "file1.tif")
-        file2_path = os.path.join(dir_path, "file2.tif")
+        file1_path = os.path.join(str(tmp_test_dir), "file1.tif")
+        file2_path = os.path.join(str(tmp_test_dir), "file2.tif")
         state.mark_skipped(file1_path, "reason1", 1.1)
         assert state.get_skipped_count() == 1
 
@@ -324,15 +337,13 @@ class TestSkippedFileTracking:
         assert state.get_skipped_count() == 2
 
     def test_skip_previously_skipped_file(
-        self, tiff_file_not_compressible, state_file, mock_ram_large, mock_disk_space_sufficient
+        self, tiff_file_not_compressible, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test that files skipped due to compression ratio are tracked and skipped on subsequent runs."""
-        from robust_tiff_compress import compress_tiff_file, get_state_file_for_directory, find_tiff_files
+        from robust_tiff_compress import compress_tiff_file, find_tiff_files
 
-        # Get state file for the directory containing the file
         file_dir = str(tiff_file_not_compressible.parent)
-        state_file_path = get_state_file_for_directory(file_dir)
-        state = CompressionState(state_file_path)
+        state = CompressionState(file_dir)
 
         # First attempt: file should be skipped due to low compression ratio
         success, message, compression_ratio = compress_tiff_file(
@@ -363,9 +374,7 @@ class TestSkippedFileTracking:
         self, tmp_test_dir, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test that --force-recompress-skipped includes previously skipped files."""
-        from robust_tiff_compress import (
-            find_tiff_files, get_state_file_for_directory, CompressionState
-        )
+        from robust_tiff_compress import find_tiff_files, CompressionState
         from tests.conftest import create_test_tiff
         import numpy as np
 
@@ -378,8 +387,7 @@ class TestSkippedFileTracking:
         create_test_tiff(file2, size_bytes=3 * 1024 * 1024, dtype=np.uint16)
 
         # Get state file and mark file1 as skipped
-        state_file_path = get_state_file_for_directory(str(tmp_test_dir))
-        state = CompressionState(state_file_path)
+        state = CompressionState(str(tmp_test_dir))
         state.mark_skipped(str(file1), "compression ratio 1.2 < 1.43", 1.2)
 
         # Without force flag: file1 should be skipped
@@ -396,9 +404,7 @@ class TestSkippedFileTracking:
         self, tmp_test_dir, mock_ram_large, mock_disk_space_sufficient
     ):
         """Test that --force-recompress-processed includes previously processed files."""
-        from robust_tiff_compress import (
-            find_tiff_files, get_state_file_for_directory, CompressionState
-        )
+        from robust_tiff_compress import find_tiff_files, CompressionState
         from tests.conftest import create_test_tiff
         import numpy as np
 
@@ -411,8 +417,7 @@ class TestSkippedFileTracking:
         create_test_tiff(file2, size_bytes=3 * 1024 * 1024, dtype=np.uint16)
 
         # Get state file and mark file1 as processed
-        state_file_path = get_state_file_for_directory(str(tmp_test_dir))
-        state = CompressionState(state_file_path)
+        state = CompressionState(str(tmp_test_dir))
         state.mark_processed(str(file1), 2.5, "zlib", 1000000, 400000)
 
         # Without force flag: file1 should be skipped

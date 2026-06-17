@@ -234,8 +234,7 @@ class TestFileFinding:
 
     def test_find_tiff_files_skip_processed(self, nested_test_dir, sample_tiff_files):
         """Test find_tiff_files() skipping already processed files."""
-        state_file = get_state_file_for_directory(str(nested_test_dir))
-        state = CompressionState(str(state_file))
+        state = CompressionState(str(nested_test_dir))
         root_dir = nested_test_dir
 
         # Mark some files as processed
@@ -300,23 +299,21 @@ class TestFileFinding:
 
         assert len(tiff_files) == 0
 
-    def test_find_tiff_files_skip_state_file_directory(self, tmp_test_dir):
-        """Test find_tiff_files() skipping directory named after state file."""
+    def test_find_tiff_files_skip_state_subdirectory(self, tmp_test_dir):
+        """Test find_tiff_files() skipping the state subdirectory."""
         from tests.conftest import create_test_tiff
+        from robust_tiff_compress import STATE_DIR
 
-        # Create a directory with state file name
-        state_dir = tmp_test_dir / "_compression_state.json"
-        state_dir.mkdir()
-        file_in_state_dir = state_dir / "file.tif"
+        state_subdir = tmp_test_dir / STATE_DIR
+        state_subdir.mkdir()
+        file_in_state_dir = state_subdir / "file.tif"
         create_test_tiff(file_in_state_dir, size_bytes=1 * 1024 * 1024)
 
-        # Create file in normal directory
         normal_file = tmp_test_dir / "file.tif"
         create_test_tiff(normal_file, size_bytes=1 * 1024 * 1024)
 
         tiff_files = find_tiff_files(str(tmp_test_dir))
 
-        # Should skip directory with state file name
         found_paths = {str(f) for f in tiff_files}
         assert str(file_in_state_dir) not in found_paths
         assert str(normal_file) in found_paths
